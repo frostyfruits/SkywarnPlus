@@ -1,22 +1,30 @@
 #!/bin/bash
 
 # swp-install by Mason Nelson
+# Modified for the FrostyFruits fork of SkywarnPlus
 # ===============================================================================
-# Script to install SkywarnPlus. This script will determine the system type (ASL1/2, ASL3, or HamVoIP),
-# install the required dependencies, download the latest version of SkywarnPlus from GitHub,
-# configure the necessary permissions, and set up a crontab entry to run SkywarnPlus at a specified interval.
-# This script also checks if the SkywarnPlus directory already exists and asks for user confirmation to remove it before continuing.
-# Please note that this script should be run as root.
+# Script to install SkywarnPlus. This script determines the system type
+# (ASL1/2, ASL3, or HamVoIP), installs required dependencies, downloads
+# SkywarnPlus from GitHub, configures permissions, and sets up cron jobs.
+#
+# This script should be run as root.
 
-# This file is part of SkywarnPlus.
-# SkywarnPlus is free software: you can redistribute it and/or modify it under the terms of
-# the GNU General Public License as published by the Free Software Foundation, either version 3
-# of the License, or (at your option) any later version. SkywarnPlus is distributed in the hope
-# that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-# You should have received a copy of the GNU General Public License along with SkywarnPlus. If not, see <https://www.gnu.org/licenses/>.
+set -euo pipefail
 
-clear
+INSTALL_DIR="/usr/local/bin/SkywarnPlus"
+REPO_OWNER="frostyfruits"
+REPO_NAME="SkywarnPlus"
+REPO_ZIP_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/main.zip"
+TMP_ZIP="/tmp/SkywarnPlus-main.zip"
+TMP_EXTRACT_DIR="/tmp/SkywarnPlus-main"
+VENV_DIR="${INSTALL_DIR}/.venv"
+
+OS=""
+VER=""
+SYSTEM_TYPE=""
+DETECTED_DEBIAN_VERSION=""
+TARGET_DEBIAN_VERSION=""
+
 
 print_divider() {
     echo "========================================"
@@ -25,7 +33,7 @@ print_divider() {
 print_notice() {
     print_divider
     echo "This script is designed to automate the installation of SkywarnPlus."
-    echo "Author: Mason Nelson"
+    echo "Maintained fork: FrostyFruits"
     echo
     echo "NOTE: This script is an installer only and will NOT automate configuration."
     echo "Please edit the config.yaml file manually after installation."
@@ -49,21 +57,37 @@ check_root() {
     fi
 }
 
+safe_remove() {
+    local target="$1"
+    if [ -d "$target" ]; then
+        rm -rf "$target"
+    elif [ -f "$target" ]; then
+        rm -f "$target"
+    fi
+}
+
 determine_system_type() {
     echo "Determining system type..."
     if [ -f /etc/debian_version ]; then
         . /etc/os-release
-        OS=$ID
-        VER=$VERSION_ID
-        ASTERISK_VERSION=$(asterisk -V)
-        if [[ "$ASTERISK_VERSION" =~ "Asterisk "([2-9][0-9]|[1-9][0-9]{2,}) ]]; then
+        OS="$ID"
+        VER="$VERSION_ID"
+        DETECTED_DEBIAN_VERSION="$VERSION_ID"
+
+        if command -v asterisk >/dev/null 2>&1; then
+            ASTERISK_VERSION="$(asterisk -V 2>/dev/null || true)"
+        else
+            ASTERISK_VERSION=""
+        fi
+
+        if [[ "$ASTERISK_VERSION" =~ Asterisk\ ([2-9][0-9]|[1-9][0-9]{2,}) ]]; then
             SYSTEM_TYPE="ASL3"
         else
             SYSTEM_TYPE="ASL1/2"
         fi
     elif [ -f /etc/arch-release ]; then
-        OS=arch
-        VER=$(uname -r)
+        OS="arch"
+        VER="$(uname -r)"
         SYSTEM_TYPE="HamVoIP"
     else
         print_divider
@@ -75,7 +99,7 @@ determine_system_type() {
 
 confirm_system_type() {
     print_divider
-    echo "Detected system type: $SYSTEM_TYPE."
+    echo "Detected system type: $SYSTEM_TYPE"
     print_divider
     read -r -p "Is this correct? (Y/n): " CONFIRMATION
     CONFIRMATION=${CONFIRMATION:-y}
@@ -88,7 +112,7 @@ confirm_system_type() {
         print_divider
         read -r -p "Enter the system type number: " SYSTEM_TYPE_INPUT
         SYSTEM_TYPE_INPUT=${SYSTEM_TYPE_INPUT:-3}
-        case $SYSTEM_TYPE_INPUT in
+        case "$SYSTEM_TYPE_INPUT" in
             1) SYSTEM_TYPE="ASL1/2" ;;
             3) SYSTEM_TYPE="ASL3" ;;
             5) SYSTEM_TYPE="HamVoIP" ;;
@@ -97,28 +121,84 @@ confirm_system_type() {
                 echo "Invalid input. Exiting."
                 print_divider
                 exit 1
-            ;;
+                ;;
         esac
     fi
+}
+
+choose_debian_version() {
+    if [ "$OS" != "debian" ]; then
+        return
+    fi
+
+    print_divider
+    echo "Detected Debian version: ${DETECTED_DEBIAN_VERSION:-unknown}"
+    echo
+    echo "Select install target:"
+    echo "1 = Debian 12"
+    echo "2 = Debian 13"
+    echo "3 = Use detected version"
+    print_divider
+
+    read -r -p "Enter selection (3): " DEB_SELECTION
+    DEB_SELECTION=${DEB_SELECTION:-3}
+
+    case "$DEB_SELECTION" in
+        1)
+            TARGET_DEBIAN_VERSION="12"
+            ;;
+        2)
+            TARGET_DEBIAN_VERSION="13"
+            ;;
+        3)
+            if [ "$DETECTED_DEBIAN_VERSION" = "12" ] || [ "$DETECTED_DEBIAN_VERSION" = "13" ]; then
+                TARGET_DEBIAN_VERSION="$DETECTED_DEBIAN_VERSION"
+            else
+                print_divider
+                echo "Unsupported or unknown Debian version: ${DETECTED_DEBIAN_VERSION:-unknown}"
+                echo "Please choose Debian 12 or Debian 13 manually."
+                print_divider
+                exit 1
+            fi
+            ;;
+        *)
+            print_divider
+            echo "Invalid selection. Exiting."
+            print_divider
+            exit 1
+            ;;
+    esac
+
+    print_divider
+    echo "Using Debian ${TARGET_DEBIAN_VERSION} install profile."
+    print_divider
 }
 
 install_dependencies() {
     print_divider
     echo "Installing dependencies..."
+
     if [ "$OS" = "debian" ]; then
         apt update
-        if [ "$SYSTEM_TYPE" = "ASL1/2" ]; then
-            apt install -y unzip python3 python3-pip ffmpeg
-            pip3 install ruamel.yaml requests python-dateutil pydub
-        else
-            apt install -y unzip python3 python3-pip ffmpeg python3-ruamel.yaml python3-requests python3-dateutil python3-pydub
-        fi
+        apt install -y \
+            unzip \
+            ffmpeg \
+            curl \
+            wget \
+            git \
+            python3 \
+            python3-venv \
+            python3-requests \
+            python3-dateutil \
+            python3-ruamel.yaml
+
     elif [ "$OS" = "arch" ]; then
         pacman -Syu --noconfirm
-        pacman -S --noconfirm --needed ffmpeg
-        if ! command -v pip &> /dev/null; then
-            wget -q https://bootstrap.pypa.io/pip/3.5/get-pip.py
-            python get-pip.py
+        pacman -S --noconfirm --needed ffmpeg python python-pip wget unzip git
+        if ! command -v pip >/dev/null 2>&1; then
+            wget -q https://bootstrap.pypa.io/pip/3.5/get-pip.py -O /tmp/get-pip.py
+            python /tmp/get-pip.py
+            rm -f /tmp/get-pip.py
         fi
         pip install requests python-dateutil pydub ruamel.yaml==0.15.100
     else
@@ -130,32 +210,29 @@ install_dependencies() {
 }
 
 check_existing() {
-    if [ -d "/usr/local/bin/SkywarnPlus" ]; then
+    if [ -d "$INSTALL_DIR" ]; then
         print_divider
-        echo "Existing SkywarnPlus installation detected. This installer script was intended for new installations."
+        echo "Existing SkywarnPlus installation detected. This installer was intended for new installations."
         read -r -p "Would you like to run UpdateSWP.py instead?
 
 [Y] Switch to UpdateSWP.py
-[N] Continue with a fresh install after making a backup to SkywarnPlus_$(date +'%m-%d-%Y')/
-    (you can grab your old config.yaml file from the backup)
+[N] Continue with a fresh install after making a backup
 
 Please choose an option (Y/n): " INSTALL_OPTION
         INSTALL_OPTION=${INSTALL_OPTION:-y}
-        
+
         if [[ "$INSTALL_OPTION" =~ ^[Yy]$ ]]; then
             print_divider
             echo "Switching to UpdateSWP.py..."
             print_divider
-            /usr/local/bin/SkywarnPlus/UpdateSWP.py
+            "${INSTALL_DIR}/UpdateSWP.py"
             exit 0
         else
             BACKUP_DIR="/usr/local/bin/SkywarnPlus_$(date +'%m-%d-%Y')"
             print_divider
             echo "Making a backup to $BACKUP_DIR..."
-            if [ -d "$BACKUP_DIR" ]; then
-                rm -rf "$BACKUP_DIR"
-            fi
-            mv /usr/local/bin/SkywarnPlus "$BACKUP_DIR"
+            safe_remove "$BACKUP_DIR"
+            mv "$INSTALL_DIR" "$BACKUP_DIR"
             print_divider
             echo "Backup complete. Continuing with fresh installation..."
         fi
@@ -164,157 +241,193 @@ Please choose an option (Y/n): " INSTALL_OPTION
 
 download_swp() {
     print_divider
-    echo "Downloading SkywarnPlus..."
-    wget -q -P /usr/local/bin https://github.com/Mason10198/SkywarnPlus/releases/latest/download/SkywarnPlus.zip
-    unzip /usr/local/bin/SkywarnPlus.zip -d /usr/local/bin
-    rm /usr/local/bin/SkywarnPlus.zip
+    echo "Downloading SkywarnPlus from ${REPO_OWNER}/${REPO_NAME}..."
+
+    safe_remove "$TMP_ZIP"
+    safe_remove "$TMP_EXTRACT_DIR"
+    safe_remove "$INSTALL_DIR"
+
+    wget -q -O "$TMP_ZIP" "$REPO_ZIP_URL"
+    unzip -q "$TMP_ZIP" -d /tmp
+
+    if [ ! -d "$TMP_EXTRACT_DIR" ]; then
+        print_divider
+        echo "Failed to extract SkywarnPlus archive. Exiting."
+        print_divider
+        exit 1
+    fi
+
+    mv "$TMP_EXTRACT_DIR" "$INSTALL_DIR"
+    rm -f "$TMP_ZIP"
+}
+
+setup_python_env() {
+    print_divider
+    echo "Setting up Python environment..."
+
+    if [ "$OS" = "debian" ]; then
+        python3 -m venv "$VENV_DIR"
+        "${VENV_DIR}/bin/pip" install --upgrade pip wheel setuptools
+        "${VENV_DIR}/bin/pip" install requests python-dateutil ruamel.yaml pydub
+    fi
 }
 
 configure_perms() {
     print_divider
     echo "Configuring permissions..."
-    
+
     if [ "$SYSTEM_TYPE" = "ASL3" ]; then
-        chown -R asterisk:asterisk /usr/local/bin/SkywarnPlus/
-        chmod -R u+rw /usr/local/bin/SkywarnPlus/
+        chown -R asterisk:asterisk "$INSTALL_DIR"
+        chmod -R u+rw "$INSTALL_DIR"
     fi
-    
-    chmod +x /usr/local/bin/SkywarnPlus/*.py
+
+    chmod +x "$INSTALL_DIR"/*.py
+    chmod +x "$INSTALL_DIR"/swp-install || true
 }
 
 remove_old_cron() {
     print_divider
-    echo "Checking for \"old style\" crontab entry for SkywarnPlus.py..."
-    CRONTAB_OLD=$(crontab -l | grep 'SkywarnPlus.py')
-    if [ -n "$CRONTAB_OLD" ]; then
-        echo "Found \"old style\" crontab entry for SkywarnPlus.py:"
-        echo "$CRONTAB_OLD"
-        echo "This must be removed to avoid conflicts. A new crontab entry will reside in /etc/cron.d/SkywarnPlus."
-        echo "Removing \"old style\" crontab entry for SkywarnPlus.py..."
-        (crontab -l | grep -v 'SkywarnPlus.py') | crontab -
-        echo "\"Old style\" crontab entry for SkywarnPlus.py removed."
+    echo "Checking for old user crontab entries for SkywarnPlus.py..."
+
+    local current_crontab
+    current_crontab="$(crontab -l 2>/dev/null || true)"
+
+    if echo "$current_crontab" | grep -q 'SkywarnPlus.py'; then
+        echo "Found old user crontab entry for SkywarnPlus.py."
+        echo "Removing old user crontab entry..."
+        echo "$current_crontab" | grep -v 'SkywarnPlus.py' | crontab -
+        echo "Old user crontab entry removed."
     else
-        echo "No \"old style\" crontab entry found for SkywarnPlus.py."
+        echo "No old user crontab entry found for SkywarnPlus.py."
     fi
-    
+
     print_divider
-    echo "Checking for existing crontab entry for ast_var_update.sh..."
-    CRONTAB_AST=$(crontab -l | grep 'ast_var_update.sh')
-    if [ -n "$CRONTAB_AST" ]; then
-        echo "It looks like you have added a crontab entry for ast_var_update.sh - this functionality will now be handled by SkywarnPlus, and this crontab entry should be removed to avoid conflicts."
+    echo "Checking for existing user crontab entry for ast_var_update.sh..."
+
+    current_crontab="$(crontab -l 2>/dev/null || true)"
+
+    if echo "$current_crontab" | grep -q 'ast_var_update.sh'; then
+        echo "It looks like you have added a crontab entry for ast_var_update.sh."
+        echo "SkywarnPlus can now handle this functionality, and the old crontab entry should be removed to avoid conflicts."
         read -r -p "Would you like to remove the crontab entry now? (Y/n): " choice
         choice=${choice:-y}
         if [[ "$choice" =~ ^[Yy]$ ]]; then
-            echo "Removing old crontab entry for ast_var_update.sh..."
-            (crontab -l | grep -v 'ast_var_update.sh') | crontab -
+            echo "$current_crontab" | grep -v 'ast_var_update.sh' | crontab -
             echo "Old crontab entry for ast_var_update.sh removed."
         else
             echo "Crontab entry for ast_var_update.sh not removed."
         fi
     else
-        echo "No existing crontab entry found for ast_var_update.sh."
+        echo "No existing user crontab entry found for ast_var_update.sh."
     fi
 }
 
 setup_crontab() {
     print_divider
-    CRON_FILE="/etc/cron.d/SkywarnPlus"
-    
+    local CRON_FILE="/etc/cron.d/SkywarnPlus"
+    local CRONTAB_INTERVAL=""
+    local EXISTING_INTERVAL=""
+
     if [ -f "$CRON_FILE" ]; then
-        EXISTING_INTERVAL=$(grep -o '^\*/[0-9]*' "$CRON_FILE" | cut -d'/' -f2)
+        EXISTING_INTERVAL="$(grep -o '^\*/[0-9]*' "$CRON_FILE" | cut -d'/' -f2 || true)"
         if [ -n "$EXISTING_INTERVAL" ]; then
-            echo "An existing crontab entry for SkywarnPlus was found with a $EXISTING_INTERVAL minute interval."
+            echo "An existing cron entry for SkywarnPlus was found with a ${EXISTING_INTERVAL} minute interval."
             echo
-            echo "By default, the existing crontab entry will be kept."
-            echo
-            echo "To keep the existing $EXISTING_INTERVAL minute interval, press enter."
-            echo "To change the interval, enter a different number of minutes."
-            echo "To disable the crontab entry and require manual execution, enter '0'."
-            read -r -p "Crontab interval ($EXISTING_INTERVAL): " CRONTAB_INTERVAL
-            print_divider
+            echo "Press enter to keep the existing interval."
+            echo "Enter a different number of minutes to change it."
+            echo "Enter 0 to disable automatic execution."
+            read -r -p "Crontab interval (${EXISTING_INTERVAL}): " CRONTAB_INTERVAL
             CRONTAB_INTERVAL=${CRONTAB_INTERVAL:-$EXISTING_INTERVAL}
         fi
     else
-        echo "By default, a new crontab entry will be added to trigger SkywarnPlus (check for alerts) every 1 minute."
+        echo "By default, a new cron entry will be added to trigger SkywarnPlus every 1 minute."
         echo
-        echo "To keep the default 1 minute interval, press enter."
-        echo "If you would like to increase this interval, enter a different number of minutes."
-        echo "To disable the crontab entry and require manual execution, enter '0'."
+        echo "Press enter to keep the default 1 minute interval."
+        echo "Enter a different number of minutes to change it."
+        echo "Enter 0 to disable automatic execution."
         read -r -p "Crontab interval (1): " CRONTAB_INTERVAL
         CRONTAB_INTERVAL=${CRONTAB_INTERVAL:-1}
     fi
 
     if [ "$CRONTAB_INTERVAL" -eq 0 ]; then
         if [ -f "$CRON_FILE" ]; then
-            rm "$CRON_FILE"
-            echo "Existing crontab entry removed. You will need to run SkywarnPlus manually."
+            rm -f "$CRON_FILE"
+            echo "Existing cron entry removed. You will need to run SkywarnPlus manually."
         else
-            echo "No crontab entry created. You will need to run SkywarnPlus manually."
+            echo "No cron entry created. You will need to run SkywarnPlus manually."
         fi
     else
-        if [ "$SYSTEM_TYPE" = "ASL3" ]; then
-            CRONTAB_ENTRY="*/$CRONTAB_INTERVAL * * * * asterisk /usr/local/bin/SkywarnPlus/SkywarnPlus.py"
+        local CRONTAB_ENTRY=""
+        if [ "$OS" = "debian" ]; then
+            if [ "$SYSTEM_TYPE" = "ASL3" ]; then
+                CRONTAB_ENTRY="*/$CRONTAB_INTERVAL * * * * asterisk ${VENV_DIR}/bin/python ${INSTALL_DIR}/SkywarnPlus.py"
+            else
+                CRONTAB_ENTRY="*/$CRONTAB_INTERVAL * * * * root ${VENV_DIR}/bin/python ${INSTALL_DIR}/SkywarnPlus.py"
+            fi
         else
-            CRONTAB_ENTRY="*/$CRONTAB_INTERVAL * * * * root /usr/local/bin/SkywarnPlus/SkywarnPlus.py"
+            if [ "$SYSTEM_TYPE" = "ASL3" ]; then
+                CRONTAB_ENTRY="*/$CRONTAB_INTERVAL * * * * asterisk ${INSTALL_DIR}/SkywarnPlus.py"
+            else
+                CRONTAB_ENTRY="*/$CRONTAB_INTERVAL * * * * root ${INSTALL_DIR}/SkywarnPlus.py"
+            fi
         fi
 
-        if grep -Fxq "$CRONTAB_ENTRY" "$CRON_FILE" 2>/dev/null; then
-            echo "Crontab entry already exists. Skipping."
-        else
-            echo "$CRONTAB_ENTRY" > "$CRON_FILE" || {
-                print_divider
-                echo "Failed to create crontab entry. Exiting."
-                print_divider
-                exit 1
-            }
-        fi
+        echo "$CRONTAB_ENTRY" > "$CRON_FILE" || {
+            print_divider
+            echo "Failed to create cron entry. Exiting."
+            print_divider
+            exit 1
+        }
+        echo "Cron entry created or updated successfully."
     fi
 
     if [ "$SYSTEM_TYPE" = "ASL3" ]; then
         print_divider
-        echo "This is an ASL3 system. In order for Supermon to display SkywarnPlus alerts on ASL3, a second crontab entry needs to be created to run ASL3_Supermon_Workaround.py as the root user."
-        
+        echo "This is an ASL3 system. In order for Supermon to display SkywarnPlus alerts on ASL3,"
+        echo "a second cron entry can be created to run ASL3_Supermon_Workaround.py as root."
+
         if [ -d "/var/www/html/supermon/" ]; then
-            echo "It looks like you have Supermon installed, so it is recommended to create this crontab entry."
+            echo "It looks like you have Supermon installed, so creating this cron entry is recommended."
         else
-            echo "It looks like you do not have Supermon installed, but you can still safely create this crontab entry in case you decide to use Supermon later."
+            echo "It looks like you do not have Supermon installed, but you can still safely create this entry."
         fi
 
-        read -r -p "Would you like to create the crontab entry for ASL3_Supermon_Workaround.py now? (Y/n): " CREATE_SUPERMON_CRON
+        read -r -p "Would you like to create the cron entry for ASL3_Supermon_Workaround.py now? (Y/n): " CREATE_SUPERMON_CRON
         CREATE_SUPERMON_CRON=${CREATE_SUPERMON_CRON:-y}
 
         if [[ "$CREATE_SUPERMON_CRON" =~ ^[Yy]$ ]]; then
-            SUPERMON_CRON_FILE="/etc/cron.d/ASL3_Supermon_Workaround"
-            SUPERMON_CRONTAB_ENTRY="* * * * * root /usr/local/bin/SkywarnPlus/ASL3_Supermon_Workaround.py"
-            
-            if grep -Fxq "$SUPERMON_CRONTAB_ENTRY" "$SUPERMON_CRON_FILE" 2>/dev/null; then
-                echo "Supermon crontab entry already exists. Skipping."
-            else
-                echo "$SUPERMON_CRONTAB_ENTRY" > "$SUPERMON_CRON_FILE" || {
-                    print_divider
-                    echo "Failed to create Supermon crontab entry. Exiting."
-                    print_divider
-                    exit 1
-                }
-                echo "Supermon crontab entry created successfully."
-            fi
+            local SUPERMON_CRON_FILE="/etc/cron.d/ASL3_Supermon_Workaround"
+            local SUPERMON_CRONTAB_ENTRY="* * * * * root ${INSTALL_DIR}/ASL3_Supermon_Workaround.py"
+
+            echo "$SUPERMON_CRONTAB_ENTRY" > "$SUPERMON_CRON_FILE" || {
+                print_divider
+                echo "Failed to create Supermon cron entry. Exiting."
+                print_divider
+                exit 1
+            }
+            echo "Supermon cron entry created successfully."
         else
-            echo "Supermon crontab entry not created."
+            echo "Supermon cron entry not created."
         fi
     fi
 }
 
 edit_config() {
     print_divider
-    echo "Installation and configuration complete. Please edit the config.yaml file as per your needs."
+    echo "Installation complete. Please edit the config.yaml file as needed."
     print_divider
     read -r -p "Would you like to edit the config.yaml file now? (Y/n): " EDIT_CONFIG
     EDIT_CONFIG=${EDIT_CONFIG:-y}
     if [[ "$EDIT_CONFIG" =~ ^[Yy]$ ]]; then
-        nano /usr/local/bin/SkywarnPlus/config.yaml
+        nano "${INSTALL_DIR}/config.yaml"
     else
         echo "You can edit the config.yaml file later using your preferred text editor."
     fi
+}
+
+cleanup() {
+    safe_remove "$TMP_ZIP"
+    safe_remove "$TMP_EXTRACT_DIR"
 }
 
 main() {
@@ -322,12 +435,15 @@ main() {
     print_notice
     determine_system_type
     confirm_system_type
+    choose_debian_version
     install_dependencies
     check_existing
     download_swp
+    setup_python_env
     configure_perms
     remove_old_cron
     setup_crontab
+    cleanup
     edit_config
 }
 

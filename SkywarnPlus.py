@@ -109,7 +109,7 @@ ENABLE_IDCHANGE = IDCHANGE_CONFIG.get("Enable", False)
 DATA_FILE = os.path.join(TMP_DIR, "data.json")
 
 # Tones directory
-TONE_DIR = config["CourtesyTones"].get("ToneDir", os.path.join(SOUNDS_PATH, "TONES"))
+TONE_DIR = config.get("CourtesyTones", {}).get("ToneDir", os.path.join(SOUNDS_PATH, "TONES"))
 
 # Define possible alert strings
 ALERT_STRINGS = [
@@ -249,8 +249,8 @@ ALERT_INDEXES = [str(i + 1) for i in range(len(ALERT_STRINGS))]
 # Test if the script needs to start from a clean slate
 CLEANSLATE = config.get("DEV", {}).get("CLEANSLATE", False)
 if CLEANSLATE:
-    shutil.rmtree(TMP_DIR)
-    os.mkdir(TMP_DIR)
+    shutil.rmtree(TMP_DIR, ignore_errors=True)
+    os.makedirs(TMP_DIR, exist_ok=True)
 
 # Logging setup
 LOG_CONFIG = config.get("Logging", {})
@@ -260,6 +260,7 @@ LOG_FILE = LOG_CONFIG.get("LogPath", os.path.join(TMP_DIR, "SkywarnPlus.log"))
 # Set up logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.DEBUG if ENABLE_DEBUG else logging.INFO)
+LOGGER.handlers.clear()
 
 # Set up log message formatting
 LOG_FORMATTER = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
@@ -322,35 +323,41 @@ def load_state():
     loaded state, this function will provide default values for those keys.
     """
 
-    # Check if the state data file exists
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as file:
+    default_state = {
+        "ct": None,
+        "id": None,
+        "alertscript_alerts": [],
+        "last_alerts": OrderedDict(),
+        "last_sayalert": [],
+        "active_alerts": [],
+    }
+
+    if not os.path.exists(DATA_FILE):
+        return default_state
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as file:
             state = json.load(file)
+    except (OSError, json.JSONDecodeError) as e:
+        LOGGER.error("load_state: Failed to load %s: %s", DATA_FILE, e)
+        return default_state
 
-            # Ensure 'alertscript_alerts' key is present in the state, default to an empty list
-            state["alertscript_alerts"] = state.get("alertscript_alerts", [])
+    state["alertscript_alerts"] = state.get("alertscript_alerts", [])
+    state["last_sayalert"] = state.get("last_sayalert", [])
+    state["active_alerts"] = state.get("active_alerts", [])
 
-            # Process 'last_alerts' key to maintain the order of alerts using OrderedDict
-            # This step is necessary because JSON does not preserve order by default
-            last_alerts = state.get("last_alerts", [])
+    last_alerts = state.get("last_alerts", [])
+    if isinstance(last_alerts, list):
+        try:
             state["last_alerts"] = OrderedDict((x[0], x[1]) for x in last_alerts)
-
-            # Ensure 'last_sayalert' and 'active_alerts' keys are present in the state
-            state["last_sayalert"] = state.get("last_sayalert", [])
-            state["active_alerts"] = state.get("active_alerts", [])
-
-            return state
-
-    # If the state data file does not exist, return a default state
+        except (TypeError, IndexError):
+            state["last_alerts"] = OrderedDict()
+    elif isinstance(last_alerts, dict):
+        state["last_alerts"] = OrderedDict(last_alerts)
     else:
-        return {
-            "ct": None,
-            "id": None,
-            "alertscript_alerts": [],
-            "last_alerts": OrderedDict(),
-            "last_sayalert": [],
-            "active_alerts": [],
-        }
+        state["last_alerts"] = OrderedDict()
+
+    return state
 
 
 def save_state(state):
@@ -373,7 +380,7 @@ def save_state(state):
     state["last_alerts"] = list(state["last_alerts"].items())
 
     # Save the state to the data file in a formatted manner
-    with open(DATA_FILE, "w") as file:
+    with open(DATA_FILE, "w", encoding="utf-8") as file:
         json.dump(state, file, ensure_ascii=False, indent=4)
 
 
@@ -493,7 +500,7 @@ def get_alerts(countyCodes):
         # url = "https://api.weather.gov/alerts/active"
         try:
             # If we can get a successful response from the API, we process the alerts from the response.
-            response = requests.get(url)
+            response = requests.get(url, timeout=20)
             response.raise_for_status()
             LOGGER.debug(
                 "getAlerts: Checking for alerts in %s at URL: %s", countyCode, url
@@ -878,10 +885,11 @@ def say_alerts(alerts):
     node_numbers = config.get("Asterisk", {}).get("Nodes", [])
     for node_number in node_numbers:
         LOGGER.info("Broadcasting alert on node %s", node_number)
-        command = '/usr/sbin/asterisk -rx "rpt localplay {} {}"'.format(
-            node_number, os.path.splitext(os.path.abspath(alert_file))[0]
+        audio_stem = os.path.splitext(os.path.abspath(alert_file))[0]
+        subprocess.run(
+            ["/usr/sbin/asterisk", "-rx", "rpt localplay {} {}".format(node_number, audio_stem)],
+            check=False,
         )
-        subprocess.run(command, shell=True)
 
     # Get the duration of the alert_file
     with contextlib.closing(wave.open(alert_file, "r")) as f:
@@ -910,7 +918,7 @@ def say_allclear():
 
     # Define file paths for the sounds
     all_clear_sound_file = os.path.join(
-        config.get("Alerting", {}).get("SoundsPath"),
+        config.get("Alerting", {}).get("SoundsPath", SOUNDS_PATH),
         "ALERTS",
         "EFFECTS",
         config.get("Alerting", {}).get("AllClearSound"),
@@ -958,10 +966,11 @@ def say_allclear():
     node_numbers = config.get("Asterisk", {}).get("Nodes", [])
     for node_number in node_numbers:
         LOGGER.info("Broadcasting all clear message on node %s", node_number)
-        command = '/usr/sbin/asterisk -rx "rpt localplay {} {}"'.format(
-            node_number, os.path.splitext(os.path.abspath(all_clear_file))[0]
+        audio_stem = os.path.splitext(os.path.abspath(all_clear_file))[0]
+        subprocess.run(
+            ["/usr/sbin/asterisk", "-rx", "rpt localplay {} {}".format(node_number, audio_stem)],
+            check=False,
         )
-        subprocess.run(command, shell=True)
 
 
 def build_tailmessage(alerts):
@@ -1173,13 +1182,13 @@ def alert_script(alerts):
                 if command["Type"].upper() == "BASH":
                     for cmd in command["Commands"]:
                         LOGGER.info("Executing Active BASH Command: %s", cmd)
-                        subprocess.run(cmd, shell=True)
+                        subprocess.run(cmd, shell=True, check=False)
                 elif command["Type"].upper() == "DTMF":
                     for node in command["Nodes"]:
                         for cmd in command["Commands"]:
-                            dtmf_cmd = 'asterisk -rx "rpt fun {} {}"'.format(node, cmd)
+                            dtmf_cmd = "rpt fun {} {}".format(node, cmd)
                             LOGGER.info("Executing Active DTMF Command: %s", dtmf_cmd)
-                            subprocess.run(dtmf_cmd, shell=True)
+                            subprocess.run(["/usr/sbin/asterisk", "-rx", dtmf_cmd], check=False)
 
     # Check for transition from non-zero to zero active alerts and execute InactiveCommands
     if previous_active_count > 0 and current_active_count == 0:
@@ -1189,13 +1198,13 @@ def alert_script(alerts):
                 if command["Type"].upper() == "BASH":
                     for cmd in command["Commands"]:
                         LOGGER.info("Executing Inactive BASH Command: %s", cmd)
-                        subprocess.run(cmd, shell=True)
+                        subprocess.run(cmd, shell=True, check=False)
                 elif command["Type"].upper() == "DTMF":
                     for node in command["Nodes"]:
                         for cmd in command["Commands"]:
-                            dtmf_cmd = 'asterisk -rx "rpt fun {} {}"'.format(node, cmd)
+                            dtmf_cmd = "rpt fun {} {}".format(node, cmd)
                             LOGGER.info("Executing Inactive DTMF Command: %s", dtmf_cmd)
-                            subprocess.run(dtmf_cmd, shell=True)
+                            subprocess.run(["/usr/sbin/asterisk", "-rx", dtmf_cmd], check=False)
 
     # Fetch Mappings from AlertScript configuration
     mappings = alertScript_config.get("Mappings", [])
@@ -1237,15 +1246,15 @@ def alert_script(alerts):
                             alert_title=alert
                         )  # Replace placeholder with alert title
                         LOGGER.info("AlertScript: Executing BASH command: %s", cmd)
-                        subprocess.run(cmd, shell=True)
+                        subprocess.run(cmd, shell=True, check=False)
                 elif mapping.get("Type") == "DTMF":
                     for node in nodes:
                         for cmd in commands:
-                            dtmf_cmd = 'asterisk -rx "rpt fun {} {}"'.format(node, cmd)
+                            dtmf_cmd = "rpt fun {} {}".format(node, cmd)
                             LOGGER.info(
                                 "AlertScript: Executing DTMF command: %s", dtmf_cmd
                             )
-                            subprocess.run(dtmf_cmd, shell=True)
+                            subprocess.run(["/usr/sbin/asterisk", "-rx", dtmf_cmd], check=False)
 
     # Process each mapping for cleared alerts
     for mapping in mappings:
@@ -1269,14 +1278,14 @@ def alert_script(alerts):
                 LOGGER.debug("Executing clear command: %s", cmd)
                 if mapping.get("Type") == "BASH":
                     LOGGER.info("AlertScript: Executing BASH ClearCommand: %s", cmd)
-                    subprocess.run(cmd, shell=True)
+                    subprocess.run(cmd, shell=True, check=False)
                 elif mapping.get("Type") == "DTMF":
                     for node in mapping.get("Nodes", []):
-                        dtmf_cmd = 'asterisk -rx "rpt fun {} {}"'.format(node, cmd)
+                        dtmf_cmd = "rpt fun {} {}".format(node, cmd)
                         LOGGER.info(
                             "AlertScript: Executing DTMF ClearCommand: %s", dtmf_cmd
                         )
-                        subprocess.run(dtmf_cmd, shell=True)
+                        subprocess.run(["/usr/sbin/asterisk", "-rx", dtmf_cmd], check=False)
 
     # Update the state with the alerts processed in this run
     state["alertscript_alerts"] = list(
@@ -1293,12 +1302,17 @@ def send_pushover(message, title=None, priority=0):
     This function constructs the payload for the request, including the user key, API token, message, title, and priority.
     The payload is then sent to the Pushover API endpoint. If the request fails, an error message is logged.
     """
-    pushover_config = config["Pushover"]
+    pushover_config = config.get("Pushover", {})
     user_key = pushover_config.get("UserKey")
     token = pushover_config.get("APIToken")
 
+    if not user_key or not token:
+        LOGGER.error("Failed to send Pushover notification: missing UserKey or APIToken")
+        return
+
     # Remove newline from the end of the message
-    message = message.rstrip("\n")
+    message = message.rstrip("
+")
 
     url = "https://api.pushover.net/1/messages.json"
     payload = {
@@ -1309,7 +1323,11 @@ def send_pushover(message, title=None, priority=0):
         "priority": priority,
     }
 
-    response = requests.post(url, data=payload)
+    try:
+        response = requests.post(url, data=payload, timeout=20)
+    except requests.exceptions.RequestException as e:
+        LOGGER.error("Failed to send Pushover notification: %s", e)
+        return
 
     if response.status_code != 200:
         LOGGER.error("Failed to send Pushover notification: %s", response.text)
@@ -1331,7 +1349,8 @@ def change_ct_id_helper(
     pushover_message,
 ):
     """
-    Check whether the CT or ID needs to be changed, performs the change, and logs the process.
+    Check whether the CT or ID needs to be changed, perform the change, and return
+    the updated pushover message.
     """
     if auto_change_enabled:
         LOGGER.debug(
@@ -1341,35 +1360,29 @@ def change_ct_id_helper(
             specified_alerts,
         )
 
-        # Extract only the alert names from the OrderedDict keys
         alert_names = [alert for alert in alerts.keys()]
-
-        # Check if any alert matches specified_alerts
-        # Here we replace set intersection with a list comprehension
-        intersecting_alerts = [
-            alert for alert in alert_names if alert in specified_alerts
-        ]
+        intersecting_alerts = [alert for alert in alert_names if alert in specified_alerts]
 
         if intersecting_alerts:
             for alert in intersecting_alerts:
                 LOGGER.debug("Alert %s requires a %s change", alert, alert_type)
-                if (
-                    change_ct("WX") if alert_type == "CT" else change_id("WX")
-                ):  # If the CT/ID was actually changed
-                    if pushover_debug:
-                        pushover_message += "Changed {} to WX\n".format(alert_type)
+                changed = change_ct("WX") if alert_type == "CT" else change_id("WX")
+                if changed and pushover_debug:
+                    pushover_message += "Changed {} to WX
+".format(alert_type)
                 break
-        else:  # No alerts require a CT/ID change, revert back to normal
+        else:
             LOGGER.debug(
                 "No alerts require a %s change, reverting to normal.", alert_type
             )
-            if (
-                change_ct("NORMAL") if alert_type == "CT" else change_id("NORMAL")
-            ):  # If the CT/ID was actually changed
-                if pushover_debug:
-                    pushover_message += "Changed {} to NORMAL\n".format(alert_type)
+            changed = change_ct("NORMAL") if alert_type == "CT" else change_id("NORMAL")
+            if changed and pushover_debug:
+                pushover_message += "Changed {} to NORMAL
+".format(alert_type)
     else:
         LOGGER.debug("%s auto change is not enabled", alert_type)
+
+    return pushover_message
 
 
 def change_ct(mode):
@@ -1761,14 +1774,14 @@ def ast_var_update():
         alert_content = ""
 
     if not MASTER_ENABLE:
-        alert = "<span style='color: darkorange;'><b><u><a href='https://github.com/mason10198/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Disabled</a></u></b></span>"
+        alert = "<span style='color: darkorange;'><b><u><a href='https://github.com/frostyfruits/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Disabled</a></u></b></span>"
     elif not alert_content:
-        alert = "<span style='color: green;'><b><u><a href='https://github.com/mason10198/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Enabled</a></u><br>No Alerts</b></span>"
+        alert = "<span style='color: green;'><b><u><a href='https://github.com/frostyfruits/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Enabled</a></u><br>No Alerts</b></span>"
     else:
         # Adjusted to remove both '[' and ']' correctly
         alert_content_cleaned = alert_content.replace("[", "").replace("]", "")
-        alert = "<span style='color: green;'><b><u><a href='https://github.com/mason10198/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Enabled</a></u><br><span style='color: red;'>{}</span></b></span>".format(
-            alert_content
+        alert = "<span style='color: green;'><b><u><a href='https://github.com/frostyfruits/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Enabled</a></u><br><span style='color: red;'>{}</span></b></span>".format(
+            alert_content_cleaned
         )
 
     LOGGER.debug("ast_var_update: Alert display: %s", alert)
@@ -2045,7 +2058,7 @@ def main():
             #     supermon_back_compat(alerts)
 
             # Change CT/ID if necessary and enabled
-            change_ct_id_helper(
+            pushover_message = change_ct_id_helper(
                 alerts,
                 ct_alerts,
                 enable_ct_auto_change,
@@ -2053,7 +2066,7 @@ def main():
                 pushover_debug,
                 pushover_message,
             )
-            change_ct_id_helper(
+            pushover_message = change_ct_id_helper(
                 alerts,
                 id_alerts,
                 enable_id_auto_change,

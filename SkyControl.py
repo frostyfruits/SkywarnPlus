@@ -2,129 +2,46 @@
 
 """
 SkyControl.py v0.8.0 by Mason Nelson
-==================================
-A Control Script for SkywarnPlus
+Modified for the FrostyFruits fork of SkywarnPlus
+===============================================================================
+A control script for SkywarnPlus.
 
-This script allows you to change the value of specific keys in the SkywarnPlus config.yaml file.
-It's designed to enable or disable certain features of SkywarnPlus from the command line.
-It is case-insensitive, accepting both upper and lower case parameters.
+This script allows you to change the value of specific keys in the
+SkywarnPlus config.yaml file. It is designed to enable or disable certain
+features of SkywarnPlus from the command line. It is case-insensitive,
+accepting both upper and lower case parameters.
 
 Usage: SkyControl.py <key> <value>
 Example: SkyControl.py sayalert false
 This will set 'SayAlert' to 'False' in the config.yaml file.
 
 This file is part of SkywarnPlus.
-SkywarnPlus is free software: you can redistribute it and/or modify it under the terms of
-the GNU General Public License as published by the Free Software Foundation, either version 3
-of the License, or (at your option) any later version. SkywarnPlus is distributed in the hope
-that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-You should have received a copy of the GNU General Public License along with SkywarnPlus. If not, see <https://www.gnu.org/licenses/>.
+SkywarnPlus is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. SkywarnPlus is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+details. You should have received a copy of the GNU General Public License
+along with SkywarnPlus. If not, see <https://www.gnu.org/licenses/>.
 """
 
 import os
 import shutil
-import sys
 import subprocess
+import sys
 from pathlib import Path
+
 from pydub import AudioSegment
 from ruamel.yaml import YAML
 
-# Use ruamel.yaml instead of PyYAML to preserve comments in the config file
 yaml = YAML()
+yaml.preserve_quotes = True
+
+SCRIPT_DIR = Path(__file__).parent.absolute()
+CONFIG_FILE = SCRIPT_DIR / "config.yaml"
 
 
-def changeCT(ct_mode):
-    """
-    Changes all courtesy tones to the specified mode ('normal' or 'wx').
-    This function ensures that the case of the keys in the config.yaml is correctly handled,
-    dynamically selecting and applying tone configurations based on the mode.
-
-    :param ct_mode: The operational mode to switch to ('normal' or 'wx').
-    """
-    ct_mode_lower = ct_mode.lower()  # Convert the mode to lowercase for comparison
-    if ct_mode_lower not in ["normal", "wx"]:
-        print("Invalid CT mode. Please provide either 'wx' or 'normal'.")
-        sys.exit(1)
-
-    mode_key = (
-        "Normal" if ct_mode_lower == "normal" else "WX"
-    )  # Convert to the case used in config.yaml
-
-    tone_dir = config["CourtesyTones"].get(
-        "ToneDir", "/usr/local/bin/SkywarnPlus/SOUNDS/TONES"
-    )
-    tones_config = config["CourtesyTones"]["Tones"]
-    changes_made = False
-
-    for ct_key, settings in tones_config.items():
-        # Normalize the ct_key to lowercase to ensure consistent access
-        target_tone = settings.get(
-            mode_key
-        )  # Access settings using the corrected mode key
-        if not target_tone:
-            print("No tone configured for {} mode in {}".format(ct_mode_lower, ct_key))
-            continue
-
-        src_file = os.path.join(tone_dir, target_tone)
-        dest_file = os.path.join(tone_dir, "{}.ulaw".format(ct_key))
-
-        # Check if the source file exists and perform the file copy operation
-        if os.path.exists(src_file):
-            shutil.copyfile(src_file, dest_file)
-            print(
-                "Updated {} to {} mode with tone {}".format(
-                    ct_key, ct_mode, target_tone
-                )
-            )
-            changes_made = True
-        else:
-            print("Source tone file does not exist: {}".format(src_file))
-
-    if changes_made:
-        print("All courtesy tones updated to {} mode.".format(ct_mode_lower))
-    else:
-        print("No changes made to courtesy tones.")
-
-    return changes_made
-
-
-def changeID(id):
-    id_dir = config["IDChange"].get("IDDir", os.path.join(str(SCRIPT_DIR), "ID"))
-    normal_id = config["IDChange"]["IDs"]["NormalID"]
-    wx_id = config["IDChange"]["IDs"]["WXID"]
-    rpt_id = config["IDChange"]["IDs"]["RptID"]
-
-    if id == "normal":
-        src_file = os.path.join(id_dir, normal_id)
-        dest_file = os.path.join(id_dir, rpt_id)
-        shutil.copyfile(src_file, dest_file)
-        return True  # Indicate that ID was changed to normal
-    elif id == "wx":
-        src_file = os.path.join(id_dir, wx_id)
-        dest_file = os.path.join(id_dir, rpt_id)
-        shutil.copyfile(src_file, dest_file)
-        return False  # Indicate that ID was changed to wx
-    else:
-        print("Invalid ID value. Please provide either 'wx' or 'normal'.")
-        sys.exit(1)
-
-
-def silent_tailmessage():
-    """
-    Generates a 100ms silent audio file and replaces the existing tailmessage file,
-    ensuring the audio is compatible with Asterisk (8000Hz, mono).
-    """
-    tailmessage_path = config["Tailmessage"].get(
-        "TailmessagePath", "/tmp/SkywarnPlus/wx-tail.wav"
-    )
-    silence = AudioSegment.silent(duration=100)
-    converted_silence = silence.set_frame_rate(8000).set_channels(1)
-    converted_silence.export(tailmessage_path, format="wav")
-    print("Replaced tailmessage with 100ms of silence.")
-
-
-# Define valid keys and corresponding audio files
 VALID_KEYS = {
     "enable": {
         "key": "Enable",
@@ -184,93 +101,241 @@ VALID_KEYS = {
     },
 }
 
-# Get the directory of the script
-SCRIPT_DIR = Path(__file__).parent.absolute()
 
-# Get the configuration file
-CONFIG_FILE = SCRIPT_DIR / "config.yaml"
-
-# Check if the correct number of arguments are passed
-if len(sys.argv) != 3:
-    print("Incorrect number of arguments. Please provide the key and the new value.")
-    print("Usage: python3 {} <key> <value>".format(sys.argv[0]))
+def fail(message):
+    print(message)
     sys.exit(1)
 
-# The input key and value
-key, value = sys.argv[1:3]
 
-# Convert to lower case
-key = key.lower()
-value = value.lower()
+def load_config():
+    if not CONFIG_FILE.is_file():
+        fail("Cannot find config.yaml at {}".format(CONFIG_FILE))
 
-# Make sure the provided key is valid
-if key not in VALID_KEYS:
-    print("The provided key does not match any configurable item.")
-    sys.exit(1)
+    try:
+        with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
+            config = yaml.load(f)
+    except Exception as exc:
+        fail("Failed to load config.yaml: {}".format(exc))
 
-# Validate the provided value
-if key in ["changect", "changeid"]:
-    if value not in VALID_KEYS[key]["available_values"]:
-        print(
-            "Invalid value for {}. Please provide either {} or {}".format(
-                key,
-                VALID_KEYS[key]["available_values"][0],
-                VALID_KEYS[key]["available_values"][1],
-            )
-        )
-        sys.exit(1)
-else:
-    if value not in ["true", "false", "toggle"]:
-        print("Invalid value. Please provide either 'true' or 'false' or 'toggle'.")
-        sys.exit(1)
+    if not isinstance(config, dict):
+        fail("config.yaml is invalid or empty.")
 
-# Load the config file
-with open(str(CONFIG_FILE), "r") as f:
-    config = yaml.load(f)
+    return config
 
-tailmessage_previously_enabled = config["Tailmessage"]["Enable"]
 
-if key == "changect":
-    value = changeCT(value)
-elif key == "changeid":
-    value = changeID(value)
-else:
-    # Convert the input value to boolean if not 'toggle'
-    if value != "toggle":
-        value = value.lower() == "true"
+def save_config(config):
+    try:
+        with open(str(CONFIG_FILE), "w", encoding="utf-8") as f:
+            yaml.dump(config, f)
+    except Exception as exc:
+        fail("Failed to save config.yaml: {}".format(exc))
 
-    # Check if toggle is required
-    if value == "toggle":
-        current_value = config[VALID_KEYS[key]["section"]][VALID_KEYS[key]["key"]]
-        value = not current_value
 
-    # Special handling for disabling SKYWARNPLUS or Tailmessage
-    if (
-        key in ["enable", "tailmessage"]
-        and value is False
-        and tailmessage_previously_enabled
-    ):
-        silent_tailmessage()
+def ensure_section_key(config, section, key):
+    if section not in config:
+        fail("Missing config section: {}".format(section))
+    if key not in config[section]:
+        fail("Missing config key: {}.{}".format(section, key))
 
-    # Update the key in the config
-    config[VALID_KEYS[key]["section"]][VALID_KEYS[key]["key"]] = value
 
-    # Save the updated config back to the file
-    with open(str(CONFIG_FILE), "w") as f:
-        yaml.dump(config, f)
+def safe_copy(src_file, dest_file, label):
+    if not os.path.isfile(src_file):
+        fail("Source file does not exist for {}: {}".format(label, src_file))
 
-# Get the correct audio file based on the new value
-audio_file = VALID_KEYS[key]["true_file"] if value else VALID_KEYS[key]["false_file"]
+    os.makedirs(os.path.dirname(dest_file), exist_ok=True)
 
-# Play the corresponding audio message on all nodes
-nodes = config["Asterisk"]["Nodes"]
-for node in nodes:
-    subprocess.run(
-        [
-            "/usr/sbin/asterisk",
-            "-rx",
-            "rpt localplay {} {}/SOUNDS/ALERTS/{}".format(
-                node, SCRIPT_DIR, audio_file.rsplit(".", 1)[0]
-            ),
-        ]
+    try:
+        shutil.copyfile(src_file, dest_file)
+    except Exception as exc:
+        fail("Failed to copy {} file: {}".format(label, exc))
+
+
+def change_ct(config, ct_mode):
+    ct_mode_lower = ct_mode.lower()
+    if ct_mode_lower not in ["normal", "wx"]:
+        fail("Invalid CT mode. Please provide either 'wx' or 'normal'.")
+
+    if "CourtesyTones" not in config:
+        fail("Missing config section: CourtesyTones")
+
+    mode_key = "Normal" if ct_mode_lower == "normal" else "WX"
+    tone_dir = config["CourtesyTones"].get(
+        "ToneDir", "/usr/local/bin/SkywarnPlus/SOUNDS/TONES"
     )
+    tones_config = config["CourtesyTones"].get("Tones", {})
+
+    if not isinstance(tones_config, dict) or not tones_config:
+        fail("No CourtesyTones.Tones entries found in config.yaml")
+
+    changes_made = False
+
+    for ct_key, settings in tones_config.items():
+        if not isinstance(settings, dict):
+            print("Skipping invalid tone config for {}".format(ct_key))
+            continue
+
+        target_tone = settings.get(mode_key)
+        if not target_tone:
+            print("No tone configured for {} mode in {}".format(ct_mode_lower, ct_key))
+            continue
+
+        src_file = os.path.join(tone_dir, target_tone)
+        dest_file = os.path.join(tone_dir, "{}.ulaw".format(ct_key))
+
+        if os.path.isfile(src_file):
+            shutil.copyfile(src_file, dest_file)
+            print("Updated {} to {} mode with tone {}".format(ct_key, ct_mode_lower, target_tone))
+            changes_made = True
+        else:
+            print("Source tone file does not exist: {}".format(src_file))
+
+    if changes_made:
+        print("All courtesy tones updated to {} mode.".format(ct_mode_lower))
+    else:
+        print("No changes made to courtesy tones.")
+
+    return changes_made
+
+
+def change_id(config, mode):
+    if "IDChange" not in config:
+        fail("Missing config section: IDChange")
+    if "IDs" not in config["IDChange"]:
+        fail("Missing config section: IDChange.IDs")
+
+    id_dir = config["IDChange"].get("IDDir", os.path.join(str(SCRIPT_DIR), "ID"))
+    ids = config["IDChange"]["IDs"]
+
+    for key_name in ["NormalID", "WXID", "RptID"]:
+        if key_name not in ids:
+            fail("Missing config key: IDChange.IDs.{}".format(key_name))
+
+    normal_id = ids["NormalID"]
+    wx_id = ids["WXID"]
+    rpt_id = ids["RptID"]
+
+    if mode == "normal":
+        src_file = os.path.join(id_dir, normal_id)
+        dest_file = os.path.join(id_dir, rpt_id)
+        safe_copy(src_file, dest_file, "normal ID")
+        print("ID changed to normal mode.")
+        return True
+
+    if mode == "wx":
+        src_file = os.path.join(id_dir, wx_id)
+        dest_file = os.path.join(id_dir, rpt_id)
+        safe_copy(src_file, dest_file, "WX ID")
+        print("ID changed to wx mode.")
+        return False
+
+    fail("Invalid ID value. Please provide either 'wx' or 'normal'.")
+
+
+def silent_tailmessage(config):
+    tailmessage_path = config.get("Tailmessage", {}).get(
+        "TailmessagePath", "/tmp/SkywarnPlus/wx-tail.wav"
+    )
+
+    silence = AudioSegment.silent(duration=100)
+    converted_silence = silence.set_frame_rate(8000).set_channels(1)
+
+    try:
+        os.makedirs(os.path.dirname(tailmessage_path), exist_ok=True)
+        converted_silence.export(tailmessage_path, format="wav")
+        print("Replaced tailmessage with 100ms of silence.")
+    except Exception as exc:
+        fail("Failed to replace tailmessage with silence: {}".format(exc))
+
+
+def get_nodes(config):
+    asterisk_section = config.get("Asterisk", {})
+    nodes = asterisk_section.get("Nodes", [])
+
+    if isinstance(nodes, (str, int)):
+        return [str(nodes)]
+
+    if isinstance(nodes, list):
+        return [str(node) for node in nodes]
+
+    return []
+
+
+def play_audio_for_nodes(config, audio_file):
+    nodes = get_nodes(config)
+    if not nodes:
+        print("No Asterisk nodes configured. Skipping playback.")
+        return
+
+    audio_stem = audio_file.rsplit(".", 1)[0]
+    audio_path = "{}/SOUNDS/ALERTS/{}".format(SCRIPT_DIR, audio_stem)
+
+    for node in nodes:
+        subprocess.run(
+            [
+                "/usr/sbin/asterisk",
+                "-rx",
+                "rpt localplay {} {}".format(node, audio_path),
+            ],
+            check=False,
+        )
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("Incorrect number of arguments. Please provide the key and the new value.")
+        print("Usage: python3 {} <key> <value>".format(sys.argv[0]))
+        sys.exit(1)
+
+    key, value = sys.argv[1:3]
+    key = key.lower()
+    value = value.lower()
+
+    if key not in VALID_KEYS:
+        fail("The provided key does not match any configurable item.")
+
+    if key in ["changect", "changeid"]:
+        if value not in VALID_KEYS[key]["available_values"]:
+            fail(
+                "Invalid value for {}. Please provide either {} or {}.".format(
+                    key,
+                    VALID_KEYS[key]["available_values"][0],
+                    VALID_KEYS[key]["available_values"][1],
+                )
+            )
+    else:
+        if value not in ["true", "false", "toggle"]:
+            fail("Invalid value. Please provide either 'true', 'false', or 'toggle'.")
+
+    config = load_config()
+    tailmessage_previously_enabled = config.get("Tailmessage", {}).get("Enable", False)
+
+    if key == "changect":
+        result_value = change_ct(config, value)
+    elif key == "changeid":
+        result_value = change_id(config, value)
+    else:
+        section = VALID_KEYS[key]["section"]
+        config_key = VALID_KEYS[key]["key"]
+
+        ensure_section_key(config, section, config_key)
+
+        if value == "toggle":
+            current_value = config[section][config_key]
+            if not isinstance(current_value, bool):
+                fail("Config value {}.{} is not a boolean.".format(section, config_key))
+            result_value = not current_value
+        else:
+            result_value = value == "true"
+
+        if key in ["enable", "tailmessage"] and result_value is False and tailmessage_previously_enabled:
+            silent_tailmessage(config)
+
+        config[section][config_key] = result_value
+        save_config(config)
+
+    audio_file = VALID_KEYS[key]["true_file"] if result_value else VALID_KEYS[key]["false_file"]
+    play_audio_for_nodes(config, audio_file)
+
+
+if __name__ == "__main__":
+    main()

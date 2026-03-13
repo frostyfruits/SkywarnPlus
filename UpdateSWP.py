@@ -2,33 +2,47 @@
 
 """
 UpdateSWP.py by Mason Nelson
+Modified for the FrostyFruits fork of SkywarnPlus
 ===============================================================================
-Script to update SkywarnPlus to the latest version. This script will download
-the latest version of SkywarnPlus from GitHub, and then merge the existing
-config.yaml with the new config.yaml. This script will also create a backup of the
-existing SkywarnPlus directory before updating.
+Script to update SkywarnPlus to the latest version. This script downloads the
+latest version of SkywarnPlus from GitHub, merges the existing config.yaml
+with the new config.yaml, and creates a backup of the existing SkywarnPlus
+directory before updating.
 
 Please note that this script might not work correctly if you have made
 significant changes to the SkywarnPlus code or directory structure.
-If you have made significant changes, it is recommended that you manually update SkywarnPlus.
+If you have made significant changes, it is recommended that you manually
+update SkywarnPlus.
 
 This file is part of SkywarnPlus.
-SkywarnPlus is free software: you can redistribute it and/or modify it under the terms of
-the GNU General Public License as published by the Free Software Foundation, either version 3
-of the License, or (at your option) any later version. SkywarnPlus is distributed in the hope
-that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-You should have received a copy of the GNU General Public License along with SkywarnPlus. If not, see <https://www.gnu.org/licenses/>.
+SkywarnPlus is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. SkywarnPlus is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+details. You should have received a copy of the GNU General Public License
+along with SkywarnPlus. If not, see <https://www.gnu.org/licenses/>.
 """
 
+import argparse
+import datetime
 import os
 import os.path
-import zipfile
 import shutil
+import stat
+import subprocess
+import sys
+import zipfile
+
 import requests
-import datetime
 from ruamel.yaml import YAML
-import argparse
+
+
+REPO_ZIP_URL = "https://github.com/frostyfruits/SkywarnPlus/archive/refs/heads/main.zip"
+TMP_ZIP = "/tmp/SkywarnPlus-main.zip"
+TMP_EXTRACT_DIR = "/tmp/SkywarnPlus-main"
+
 
 # Set up command line arguments
 parser = argparse.ArgumentParser(description="Update SkywarnPlus")
@@ -41,19 +55,16 @@ parser.add_argument(
 args = parser.parse_args()
 
 
-# Logging function
 def log(message):
     print("[UPDATE]:", message)
 
 
-# Function to load a yaml file
 def load_yaml_file(filename):
     yaml = YAML()
     with open(filename, "r") as f:
         return yaml.load(f)
 
 
-# Function to save a yaml file
 def save_yaml_file(filename, data):
     yaml = YAML()
     yaml.preserve_quotes = True
@@ -61,32 +72,24 @@ def save_yaml_file(filename, data):
         yaml.dump(data, f)
 
 
-# Function to merge two yaml files
 def merge_yaml_files(old_file, new_file):
-    # Load the old and new yaml files
     old_yaml_data = load_yaml_file(old_file)
     new_yaml_data = load_yaml_file(new_file)
 
-    # Merge the new yaml file with values from the old file
     for key in new_yaml_data:
         if key in old_yaml_data:
-            if isinstance(new_yaml_data[key], dict) and isinstance(
-                old_yaml_data[key], dict
-            ):
+            if isinstance(new_yaml_data[key], dict) and isinstance(old_yaml_data[key], dict):
                 new_yaml_data[key].update(old_yaml_data[key])
             else:
                 new_yaml_data[key] = old_yaml_data[key]
 
-    # Save the merged yaml data back to the new file
     save_yaml_file(new_file, new_yaml_data)
 
 
 def remove_duplicate_comments(filename):
-    # Keep track of the last comment block
     last_comment_block = []
     new_lines = []
 
-    # Read the file line by line
     with open(filename, "r") as f:
         lines = f.readlines()
 
@@ -94,7 +97,6 @@ def remove_duplicate_comments(filename):
     for line in lines:
         stripped_line = line.strip()
 
-        # If line is a comment or blank, it's part of the current block
         if stripped_line.startswith("#") or not stripped_line:
             current_comment_block.append(line)
         else:
@@ -105,37 +107,34 @@ def remove_duplicate_comments(filename):
                 current_comment_block = []
             new_lines.append(line)
 
-    # Check after finishing file
     if current_comment_block and current_comment_block != last_comment_block:
         new_lines.extend(current_comment_block)
 
-    # Write the new lines back to the file
     with open(filename, "w") as f:
         f.writelines(new_lines)
-        
 
-# Display the initial warning
+
 def display_update_warning():
     warning_message = """
     ============================================================
     WARNING: Please read the following information carefully before updating.
 
-    This utility is designed to update SkywarnPlus to the latest version by fetching it 
+    This utility is designed to update SkywarnPlus to the latest version by fetching it
     directly from GitHub. Before updating:
-    
+
     - A backup of the existing SkywarnPlus directory will be created to ensure safety.
-    
-    - The updater will attempt to merge your existing config.yaml with the new version's 
-      config.yaml. ALWAYS double-check your config.yaml after updating. This script is not 
+
+    - The updater will attempt to merge your existing config.yaml with the new version's
+      config.yaml. ALWAYS double-check your config.yaml after updating. This script is not
       perfect and may not merge your configuration correctly.
-    
-    - If you've made significant changes to the SkywarnPlus code, directory structure, or 
-      configuration, this updater might not work correctly. In such cases, manual updating 
+
+    - If you've made significant changes to the SkywarnPlus code, directory structure, or
+      configuration, this updater might not work correctly. In such cases, manual updating
       is recommended.
-    
-    Remember, this script's primary goal is to help with the updating process. However, 
-    given the complexities of merging and updating, always verify the results yourself to 
-      ensure your system continues to operate as expected.
+
+    Remember, this script's primary goal is to help with the updating process. However,
+    given the complexities of merging and updating, always verify the results yourself to
+    ensure your system continues to operate as expected.
 
     Proceed with caution.
     ============================================================
@@ -143,90 +142,125 @@ def display_update_warning():
     print(warning_message)
 
 
+def set_exec_bits(root_dir):
+    log("Setting executable permissions on Python files and installer...")
+    for dirpath, dirs, files in os.walk(root_dir):
+        for filename in files:
+            full_path = os.path.join(dirpath, filename)
+            if filename.endswith(".py") or filename in ("swp-install",):
+                current_mode = os.stat(full_path).st_mode
+                os.chmod(
+                    full_path,
+                    current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+                )
+
+
+def rebuild_venv_if_present(root_dir):
+    venv_dir = os.path.join(root_dir, ".venv")
+    venv_python = os.path.join(venv_dir, "bin", "python")
+    venv_pip = os.path.join(venv_dir, "bin", "pip")
+
+    if not os.path.isdir(venv_dir):
+        log("No .venv found, skipping virtual environment rebuild.")
+        return
+
+    log("Rebuilding local virtual environment...")
+    shutil.rmtree(venv_dir, ignore_errors=True)
+
+    subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True)
+    subprocess.run([venv_pip, "install", "--upgrade", "pip", "wheel", "setuptools"], check=True)
+    subprocess.run(
+        [venv_pip, "install", "requests", "python-dateutil", "ruamel.yaml", "pydub"],
+        check=True,
+    )
+
+    if os.path.isfile(venv_python):
+        log("Virtual environment rebuilt successfully.")
+
+
+def safe_remove(path):
+    if os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+    elif os.path.isfile(path):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
 # Check for root privileges
 if os.geteuid() != 0:
-    exit("ERROR: This script must be run as root.")
+    sys.exit("ERROR: This script must be run as root.")
 
 # Make sure the script is in the right directory
 if not os.path.isfile("SkywarnPlus.py"):
-    print(
-        "ERROR: Cannot find SkywarnPlus.py. Make sure this script is in the SkywarnPlus directory."
-    )
-    exit()
+    print("ERROR: Cannot find SkywarnPlus.py. Make sure this script is in the SkywarnPlus directory.")
+    sys.exit(1)
 
 # Display the warning message
 if not args.force:
     display_update_warning()
-    
+
     confirmation = input("\nDo you want to continue with the update? (yes/no) ")
     if confirmation.lower() != "yes":
         log("Update cancelled by user.")
-        exit()
+        sys.exit(0)
 
 # Zip the current directory
 root_dir = os.getcwd()
 log("Current directory is {}".format(root_dir))
 
-# Full path to the archive
 zip_name = root_dir + "_backup_" + datetime.datetime.now().strftime("%Y%m%d_%H%M")
 log("Creating backup at {}.zip...".format(zip_name))
-
-# Create the zip archive
 shutil.make_archive(zip_name, "zip", root_dir)
 
-# Download the new zip from GitHub
-url = (
-    "https://github.com/Mason10198/SkywarnPlus/releases/latest/download/SkywarnPlus.zip"
-)
-log("Downloading SkywarnPlus from {}...".format(url))
-response = requests.get(url)
+# Clean old temp files first
+safe_remove(TMP_ZIP)
+safe_remove(TMP_EXTRACT_DIR)
 
-with open("/tmp/SkywarnPlus.zip", "wb") as out_file:
+# Download the new zip from GitHub
+log("Downloading SkywarnPlus from {}...".format(REPO_ZIP_URL))
+response = requests.get(REPO_ZIP_URL, timeout=60)
+response.raise_for_status()
+
+with open(TMP_ZIP, "wb") as out_file:
     out_file.write(response.content)
 
-# Delete /tmp/SkywarnPlus if it already exists
-if os.path.isdir("/tmp/SkywarnPlus"):
-    log("Removing old /tmp/SkywarnPlus directory...")
-    shutil.rmtree("/tmp/SkywarnPlus")
-
-# Unzip the downloaded file
-log("Extracting SkywarnPlus.zip...")
-with zipfile.ZipFile("/tmp/SkywarnPlus.zip", "r") as zip_ref:
+# Extract the downloaded archive
+log("Extracting update archive...")
+with zipfile.ZipFile(TMP_ZIP, "r") as zip_ref:
     zip_ref.extractall("/tmp")
 
-# Merge the old config with the new config
-log("Merging old config with new config...")
-merge_yaml_files("config.yaml", "/tmp/SkywarnPlus/config.yaml")
+if not os.path.isdir(TMP_EXTRACT_DIR):
+    sys.exit("ERROR: Extracted update directory not found at {}".format(TMP_EXTRACT_DIR))
 
-# Remove duplicate comments from config.yaml
-remove_duplicate_comments("/tmp/SkywarnPlus/config.yaml")
+new_config_path = os.path.join(TMP_EXTRACT_DIR, "config.yaml")
+old_config_path = os.path.join(root_dir, "config.yaml")
+
+if os.path.isfile(old_config_path) and os.path.isfile(new_config_path):
+    log("Merging old config with new config...")
+    merge_yaml_files(old_config_path, new_config_path)
+    remove_duplicate_comments(new_config_path)
+else:
+    log("config.yaml not found in one of the expected locations, skipping merge.")
 
 # Replace old directory with updated files
-log("Merging updated files into {}...".format(root_dir))
-for root, dirs, files in os.walk("/tmp/SkywarnPlus"):
-    for file in files:
-        old_file_path = os.path.join(root, file)
-        relative_path = os.path.relpath(old_file_path, "/tmp/SkywarnPlus")
-        new_file_path = os.path.join(root_dir, relative_path)
+log("Copying updated files into {}...".format(root_dir))
+for walk_root, dirs, files in os.walk(TMP_EXTRACT_DIR):
+    for file_name in files:
+        src_path = os.path.join(walk_root, file_name)
+        rel_path = os.path.relpath(src_path, TMP_EXTRACT_DIR)
+        dst_path = os.path.join(root_dir, rel_path)
 
-        os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
-        shutil.copy2(old_file_path, new_file_path)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        shutil.copy2(src_path, dst_path)
 
-# Set all .py files as executable
-log("Setting .py files as executable...")
-for dirpath, dirs, files in os.walk(root_dir):
-    for filename in files:
-        if filename.endswith(".py"):
-            os.chmod(os.path.join(dirpath, filename), 0o755)  # chmod +x
+set_exec_bits(root_dir)
+rebuild_venv_if_present(root_dir)
 
-# Delete temporary files and folders
+# Clean up temp files
 log("Deleting temporary files and folders...")
-shutil.rmtree("/tmp/SkywarnPlus")
-os.remove("/tmp/SkywarnPlus.zip")
-
-# Delete old TmpDir if it still exists
-if os.path.isdir("/tmp/SkywarnPlus"):
-    log("Removing old /tmp/SkywarnPlus directory...")
-    shutil.rmtree("/tmp/SkywarnPlus")
+safe_remove(TMP_EXTRACT_DIR)
+safe_remove(TMP_ZIP)
 
 log("Update complete!")
