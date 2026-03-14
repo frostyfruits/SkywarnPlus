@@ -28,7 +28,6 @@ along with SkywarnPlus. If not, see <https://www.gnu.org/licenses/>.
 import argparse
 import datetime
 import os
-import os.path
 import shutil
 import stat
 import subprocess
@@ -44,7 +43,6 @@ TMP_ZIP = "/tmp/SkywarnPlus-main.zip"
 TMP_EXTRACT_DIR = "/tmp/SkywarnPlus-main"
 
 
-# Set up command line arguments
 parser = argparse.ArgumentParser(description="Update SkywarnPlus")
 parser.add_argument(
     "-f",
@@ -61,20 +59,20 @@ def log(message):
 
 def load_yaml_file(filename):
     yaml = YAML()
-    with open(filename, "r") as f:
+    with open(filename, "r", encoding="utf-8") as f:
         return yaml.load(f)
 
 
 def save_yaml_file(filename, data):
     yaml = YAML()
     yaml.preserve_quotes = True
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         yaml.dump(data, f)
 
 
 def merge_yaml_files(old_file, new_file):
-    old_yaml_data = load_yaml_file(old_file)
-    new_yaml_data = load_yaml_file(new_file)
+    old_yaml_data = load_yaml_file(old_file) or {}
+    new_yaml_data = load_yaml_file(new_file) or {}
 
     for key in new_yaml_data:
         if key in old_yaml_data:
@@ -90,7 +88,7 @@ def remove_duplicate_comments(filename):
     last_comment_block = []
     new_lines = []
 
-    with open(filename, "r") as f:
+    with open(filename, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     current_comment_block = []
@@ -110,7 +108,7 @@ def remove_duplicate_comments(filename):
     if current_comment_block and current_comment_block != last_comment_block:
         new_lines.extend(current_comment_block)
 
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
 
 
@@ -147,7 +145,7 @@ def set_exec_bits(root_dir):
     for dirpath, dirs, files in os.walk(root_dir):
         for filename in files:
             full_path = os.path.join(dirpath, filename)
-            if filename.endswith(".py") or filename in ("swp-install",):
+            if filename.endswith(".py") or filename == "swp-install":
                 current_mode = os.stat(full_path).st_mode
                 os.chmod(
                     full_path,
@@ -178,6 +176,21 @@ def rebuild_venv_if_present(root_dir):
         log("Virtual environment rebuilt successfully.")
 
 
+def restore_asl3_ownership(root_dir):
+    try:
+        shutil.chown(root_dir, user="asterisk", group="asterisk")
+    except Exception:
+        return
+
+    for walk_root, dirs, files in os.walk(root_dir):
+        for name in dirs + files:
+            path = os.path.join(walk_root, name)
+            try:
+                shutil.chown(path, user="asterisk", group="asterisk")
+            except Exception:
+                pass
+
+
 def safe_remove(path):
     if os.path.isdir(path):
         shutil.rmtree(path, ignore_errors=True)
@@ -188,16 +201,13 @@ def safe_remove(path):
             pass
 
 
-# Check for root privileges
 if os.geteuid() != 0:
     sys.exit("ERROR: This script must be run as root.")
 
-# Make sure the script is in the right directory
 if not os.path.isfile("SkywarnPlus.py"):
     print("ERROR: Cannot find SkywarnPlus.py. Make sure this script is in the SkywarnPlus directory.")
     sys.exit(1)
 
-# Display the warning message
 if not args.force:
     display_update_warning()
 
@@ -206,7 +216,6 @@ if not args.force:
         log("Update cancelled by user.")
         sys.exit(0)
 
-# Zip the current directory
 root_dir = os.getcwd()
 log("Current directory is {}".format(root_dir))
 
@@ -214,11 +223,9 @@ zip_name = root_dir + "_backup_" + datetime.datetime.now().strftime("%Y%m%d_%H%M
 log("Creating backup at {}.zip...".format(zip_name))
 shutil.make_archive(zip_name, "zip", root_dir)
 
-# Clean old temp files first
 safe_remove(TMP_ZIP)
 safe_remove(TMP_EXTRACT_DIR)
 
-# Download the new zip from GitHub
 log("Downloading SkywarnPlus from {}...".format(REPO_ZIP_URL))
 response = requests.get(REPO_ZIP_URL, timeout=60)
 response.raise_for_status()
@@ -226,7 +233,6 @@ response.raise_for_status()
 with open(TMP_ZIP, "wb") as out_file:
     out_file.write(response.content)
 
-# Extract the downloaded archive
 log("Extracting update archive...")
 with zipfile.ZipFile(TMP_ZIP, "r") as zip_ref:
     zip_ref.extractall("/tmp")
@@ -244,7 +250,6 @@ if os.path.isfile(old_config_path) and os.path.isfile(new_config_path):
 else:
     log("config.yaml not found in one of the expected locations, skipping merge.")
 
-# Replace old directory with updated files
 log("Copying updated files into {}...".format(root_dir))
 for walk_root, dirs, files in os.walk(TMP_EXTRACT_DIR):
     for file_name in files:
@@ -257,8 +262,8 @@ for walk_root, dirs, files in os.walk(TMP_EXTRACT_DIR):
 
 set_exec_bits(root_dir)
 rebuild_venv_if_present(root_dir)
+restore_asl3_ownership(root_dir)
 
-# Clean up temp files
 log("Deleting temporary files and folders...")
 safe_remove(TMP_EXTRACT_DIR)
 safe_remove(TMP_ZIP)

@@ -155,8 +155,8 @@ choose_debian_version() {
                 TARGET_DEBIAN_VERSION="$DETECTED_DEBIAN_VERSION"
             else
                 print_divider
-                echo "Unsupported or unknown Debian version: ${DETECTED_DEBIAN_VERSION:-unknown}"
-                echo "Please choose Debian 12 or Debian 13 manually."
+                echo "Unsupported or unknown detected Debian version: ${DETECTED_DEBIAN_VERSION:-unknown}"
+                echo "Please rerun and choose Debian 12 or Debian 13 manually."
                 print_divider
                 exit 1
             fi
@@ -171,42 +171,8 @@ choose_debian_version() {
 
     print_divider
     echo "Using Debian ${TARGET_DEBIAN_VERSION} install profile."
+    echo "Debian 12 and Debian 13 currently use the same dependency profile in this installer."
     print_divider
-}
-
-install_dependencies() {
-    print_divider
-    echo "Installing dependencies..."
-
-    if [ "$OS" = "debian" ]; then
-        apt update
-        apt install -y \
-            unzip \
-            ffmpeg \
-            curl \
-            wget \
-            git \
-            python3 \
-            python3-venv \
-            python3-requests \
-            python3-dateutil \
-            python3-ruamel.yaml
-
-    elif [ "$OS" = "arch" ]; then
-        pacman -Syu --noconfirm
-        pacman -S --noconfirm --needed ffmpeg python python-pip wget unzip git
-        if ! command -v pip >/dev/null 2>&1; then
-            wget -q https://bootstrap.pypa.io/pip/3.5/get-pip.py -O /tmp/get-pip.py
-            python /tmp/get-pip.py
-            rm -f /tmp/get-pip.py
-        fi
-        pip install requests python-dateutil pydub ruamel.yaml==0.15.100
-    else
-        print_divider
-        echo "Unsupported OS version. Exiting."
-        print_divider
-        exit 1
-    fi
 }
 
 check_existing() {
@@ -236,6 +202,48 @@ Please choose an option (Y/n): " INSTALL_OPTION
             print_divider
             echo "Backup complete. Continuing with fresh installation..."
         fi
+    fi
+}
+
+install_dependencies() {
+    print_divider
+    echo "Installing dependencies..."
+
+    if [ "$OS" = "debian" ]; then
+        if [ -z "$TARGET_DEBIAN_VERSION" ]; then
+            print_divider
+            echo "Debian install profile was not selected. Exiting."
+            print_divider
+            exit 1
+        fi
+
+        apt update
+        apt install -y \
+            unzip \
+            ffmpeg \
+            curl \
+            wget \
+            git \
+            python3 \
+            python3-venv \
+            python3-requests \
+            python3-dateutil \
+            python3-ruamel.yaml
+
+    elif [ "$OS" = "arch" ]; then
+        pacman -Syu --noconfirm
+        pacman -S --noconfirm --needed ffmpeg python python-pip wget unzip git
+        if ! command -v pip >/dev/null 2>&1; then
+            wget -q https://bootstrap.pypa.io/pip/3.5/get-pip.py -O /tmp/get-pip.py
+            python /tmp/get-pip.py
+            rm -f /tmp/get-pip.py
+        fi
+        pip install requests python-dateutil pydub ruamel.yaml==0.15.100
+    else
+        print_divider
+        echo "Unsupported OS version. Exiting."
+        print_divider
+        exit 1
     fi
 }
 
@@ -282,7 +290,9 @@ configure_perms() {
     fi
 
     chmod +x "$INSTALL_DIR"/*.py
-    chmod +x "$INSTALL_DIR"/swp-install || true
+    if [ -f "$INSTALL_DIR/swp-install" ]; then
+        chmod +x "$INSTALL_DIR/swp-install"
+    fi
 }
 
 remove_old_cron() {
@@ -313,7 +323,7 @@ remove_old_cron() {
         choice=${choice:-y}
         if [[ "$choice" =~ ^[Yy]$ ]]; then
             echo "$current_crontab" | grep -v 'ast_var_update.sh' | crontab -
-            echo "Old crontab entry for ast_var_update.sh removed."
+            echo "Old user crontab entry for ast_var_update.sh removed."
         else
             echo "Crontab entry for ast_var_update.sh not removed."
         fi
@@ -436,8 +446,8 @@ main() {
     determine_system_type
     confirm_system_type
     choose_debian_version
-    install_dependencies
     check_existing
+    install_dependencies
     download_swp
     setup_python_env
     configure_perms

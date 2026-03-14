@@ -2,9 +2,10 @@
 
 """
 CountyIDGen.py by Mason Nelson
+Modified for the FrostyFruits fork of SkywarnPlus
 ===============================================================================
-This script is a utility for generating WAV audio files corresponding to each 
-county code defined in the SkywarnPlus config.yaml. The audio files are generated 
+This script is a utility for generating WAV audio files corresponding to each
+county code defined in the SkywarnPlus config.yaml. The audio files are generated
 using the Voice RSS Text-to-Speech API and the settings defined in the config.yaml.
 
 This script will generate the files, save them in the correct location, and automatically
@@ -19,72 +20,77 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public 
 You should have received a copy of the GNU General Public License along with SkywarnPlus. If not, see <https://www.gnu.org/licenses/>.
 """
 
-import os
 import io
+import logging
+import os
 import re
 import sys
-import requests
-import logging
 import zipfile
 from datetime import datetime
-from ruamel.yaml import YAML
+
+import requests
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
+from ruamel.yaml import YAML
 
-# Initialize YAML
+
 yaml = YAML()
 
-# Directories and Paths
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
 COUNTY_CODES_PATH = os.path.join(BASE_DIR, "CountyCodes.md")
 
-# Load configurations
-with open(CONFIG_PATH, "r") as config_file:
+with open(CONFIG_PATH, "r", encoding="utf-8") as config_file:
     config = yaml.load(config_file)
 
-# Logging setup
 LOG_CONFIG = config.get("Logging", {})
 ENABLE_DEBUG = LOG_CONFIG.get("Debug", False)
-LOG_FILE = LOG_CONFIG.get("LogPath", os.path.join(BASE_DIR, "SkywarnPlus.log"))
+LOG_FILE = LOG_CONFIG.get("LogPath", os.path.join("/tmp/SkywarnPlus", "SkywarnPlus.log"))
 
-# Set up logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.DEBUG if ENABLE_DEBUG else logging.INFO)
+LOGGER.handlers.clear()
 
-# Set up log message formatting
 LOG_FORMATTER = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 
-# Set up console log handler
 C_HANDLER = logging.StreamHandler()
 C_HANDLER.setFormatter(LOG_FORMATTER)
 LOGGER.addHandler(C_HANDLER)
 
-# Ensure the directory for the log file exists
 log_directory = os.path.dirname(LOG_FILE)
-if not os.path.exists(log_directory):
-    os.makedirs(log_directory)
+if log_directory and not os.path.exists(log_directory):
+    os.makedirs(log_directory, exist_ok=True)
 
-# Set up file log handler
 F_HANDLER = logging.FileHandler(LOG_FILE)
 F_HANDLER.setFormatter(LOG_FORMATTER)
 LOGGER.addHandler(F_HANDLER)
 
-# Extract API parameters from the config
-API_KEY = config["SkyDescribe"]["APIKey"]
-LANGUAGE = config["SkyDescribe"]["Language"]
-SPEED = str(config["SkyDescribe"]["Speed"])
-VOICE = config["SkyDescribe"]["Voice"]
+API_KEY = config.get("SkyDescribe", {}).get("APIKey", "")
+LANGUAGE = config.get("SkyDescribe", {}).get("Language", "en-us")
+SPEED = str(config.get("SkyDescribe", {}).get("Speed", 0))
+VOICE = config.get("SkyDescribe", {}).get("Voice", "John")
 SOUNDS_PATH = config.get("Alerting", {}).get(
     "SoundsPath", os.path.join(BASE_DIR, "SOUNDS")
 )
 
 
+def sanitize_text_for_tts(text):
+    """
+    Sanitize the text for TTS processing.
+    Remove characters that aren't alphanumeric or whitespace.
+    """
+    if not text:
+        return ""
+    sanitized_text = re.sub(r"[^a-zA-Z0-9\s]", "", text)
+    sanitized_text = re.sub(r"\s+", " ", sanitized_text).strip()
+    return sanitized_text
+
+
 def generate_wav(api_key, language, speed, voice, text, output_file):
     """
-    Convert the given text to audio using the Voice RSS Text-to-Speech API and trims silence.
+    Convert the given text to audio using the Voice RSS Text-to-Speech API and trim silence.
     """
-    base_url = "http://api.voicerss.org/"
+    base_url = "https://api.voicerss.org/"
     params = {
         "key": api_key,
         "hl": language,
@@ -95,129 +101,155 @@ def generate_wav(api_key, language, speed, voice, text, output_file):
         "v": voice,
     }
 
-    response = requests.get(base_url, params=params)
+    response = requests.get(base_url, params=params, timeout=60)
     response.raise_for_status()
 
-    # If the response text contains "ERROR" then log it and exit
-    if "ERROR" in response.text:
-        LOGGER.error("SkyDescribe: %s", response.text)
+    response_text = response.text if isinstance(response.text, str) else ""
+    if response_text.startswith("ERROR:"):
+        LOGGER.error("VoiceRSS: %s", response_text)
         sys.exit(1)
 
-    # Load the audio data into pydub's AudioSegment
     sound = AudioSegment.from_wav(io.BytesIO(response.content))
 
-    # Normalize the entire audio clip
-    target_dBFS = -6.0
-    gain_difference = target_dBFS - sound.max_dBFS
+    target_dbfs = -6.0
+    gain_difference = target_dbfs - sound.max_dBFS
     sound = sound.apply_gain(gain_difference)
 
-    # Split track where silence is 100ms or more and get chunks
     chunks = split_on_silence(sound, min_silence_len=200, silence_thresh=-40)
 
-    # If there are chunks, concatenate all of them
     if chunks:
-        combined_sound = sum(chunks, AudioSegment.empty())
-
-        # Export the combined audio
+        combined_sound = AudioSegment.empty()
+        for chunk in chunks:
+            combined_sound += chunk
         combined_sound.export(output_file, format="wav")
     else:
-        # If there are no chunks, just save the original audio
         sound.export(output_file, format="wav")
 
 
-def sanitize_text_for_tts(text):
+def backup_existing_files(path, backup_name):
     """
-    Sanitize the text for TTS processing.
-    Remove characters that aren't alphanumeric or whitespace.
+    Backup existing county WAV files in the specified path to a zip file.
     """
-    sanitized_text = re.sub(r"[^a-zA-Z0-9\s]", "", text)
-    return sanitized_text
+    if not os.path.isdir(path):
+        return
 
-
-def backup_existing_files(path, filename_pattern, backup_name):
-    """
-    Backup files matching the filename pattern in the specified path to a zip file.
-    """
-    files_to_backup = [
-        f
-        for f in os.listdir(path)
-        if f.startswith(filename_pattern) and f.endswith(".wav")
-    ]
+    files_to_backup = [f for f in os.listdir(path) if f.endswith(".wav")]
     if not files_to_backup:
         return
 
     with zipfile.ZipFile(backup_name, "w") as zipf:
-        for file in files_to_backup:
-            zipf.write(os.path.join(path, file), file)
-
-
-def process_county_codes():
-    """
-    Process county codes and make changes.
-    """
-    new_county_codes = []
-    for entry in config["Alerting"]["CountyCodes"]:
-        overwrite = False
-        if isinstance(entry, str):  # County code without WAV file
-            county_code = entry
-        elif isinstance(entry, dict):  # County code with WAV file
-            county_code = list(entry.keys())[0]
-
-            county_name = county_data.get(county_code)
-            sanitized_county_name = sanitize_text_for_tts(county_name)
-            expected_wav_file = "{}.wav".format(sanitized_county_name)
-
-            if os.path.exists(os.path.join(SOUNDS_PATH, expected_wav_file)):
-                if not overwrite:
-                    user_input = input(
-                        "The WAV file for {} ({}) already exists. Do you want to overwrite it? [yes/no]: ".format(
-                            county_name, expected_wav_file
-                        )
-                    ).lower()
-                    if user_input != "yes":
-                        LOGGER.info(
-                            "Skipping generation for {} due to user input.".format(
-                                county_name
-                            )
-                        )
-                        new_county_codes.append({county_code: expected_wav_file})
-                        continue  # Skip to the next county code
-                    overwrite = True
-
-        # At this point, we are sure that we either have a new county code or the user has agreed to overwrite.
-        county_name = county_data.get(county_code)
-        if county_name:
-            sanitized_county_name = sanitize_text_for_tts(county_name)
-            output_file = os.path.join(
-                SOUNDS_PATH, "{}.wav".format(sanitized_county_name)
-            )
-            generate_wav(
-                API_KEY, LANGUAGE, SPEED, VOICE, sanitized_county_name, output_file
-            )
-
-            # Add the mapping for the county code to the new list
-            new_county_codes.append(
-                {county_code: "{}.wav".format(sanitized_county_name)}
-            )
-
-    # Replace the old CountyCodes list with the new one
-    config["Alerting"]["CountyCodes"] = new_county_codes
+        for file_name in files_to_backup:
+            zipf.write(os.path.join(path, file_name), file_name)
 
 
 def load_county_codes_from_md(md_file_path):
     """
-    Load county names from the MD file and return a dictionary mapping county codes to county names.
+    Load county names from the markdown tables and return a dictionary mapping
+    county codes to county names.
     """
-    with open(md_file_path, "r") as file:
+    with open(md_file_path, "r", encoding="utf-8") as file:
         lines = file.readlines()
 
     county_data = {}
+    in_table = False
+
     for line in lines:
-        if line.startswith("|") and "County Name" not in line and "-----" not in line:
-            _, county_name, code, _ = line.strip().split("|")
-            county_data[code.strip()] = county_name.strip()
+        if line.startswith("| County |"):
+            in_table = True
+            continue
+        if not in_table:
+            continue
+
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("##"):
+            continue
+        if not stripped.startswith("|"):
+            continue
+
+        parts = [s.strip() for s in line.split("|")[1:-1]]
+        if len(parts) != 2:
+            continue
+
+        county_name, code = parts
+        if county_name == "County" or code == "Code":
+            continue
+
+        county_data[code] = county_name
 
     return county_data
+
+
+def normalize_county_codes(county_codes_config):
+    """
+    Normalize Alerting.CountyCodes into a list of county code strings.
+    """
+    normalized = []
+
+    if isinstance(county_codes_config, list):
+        for entry in county_codes_config:
+            if isinstance(entry, str):
+                normalized.append(entry)
+            elif isinstance(entry, dict):
+                for county_code in entry.keys():
+                    normalized.append(county_code)
+    elif isinstance(county_codes_config, dict):
+        normalized.extend(list(county_codes_config.keys()))
+
+    return normalized
+
+
+def process_county_codes(county_data):
+    """
+    Generate county WAV files and update config mappings.
+    """
+    county_codes_config = config.get("Alerting", {}).get("CountyCodes", [])
+    normalized_county_codes = normalize_county_codes(county_codes_config)
+
+    new_county_codes = []
+
+    for county_code in normalized_county_codes:
+        county_name = county_data.get(county_code)
+
+        if not county_name:
+            LOGGER.warning(
+                "County code %s was not found in CountyCodes.md. Leaving it unchanged.",
+                county_code,
+            )
+            new_county_codes.append(county_code)
+            continue
+
+        sanitized_county_name = sanitize_text_for_tts(county_name)
+        if not sanitized_county_name:
+            LOGGER.warning(
+                "County name for %s could not be sanitized into a usable filename. Leaving it unchanged.",
+                county_code,
+            )
+            new_county_codes.append(county_code)
+            continue
+
+        expected_wav_file = "{}.wav".format(sanitized_county_name)
+        output_file = os.path.join(SOUNDS_PATH, expected_wav_file)
+
+        overwrite = True
+        if os.path.exists(output_file):
+            user_input = input(
+                "The WAV file for {} ({}) already exists. Do you want to overwrite it? [yes/no]: ".format(
+                    county_name, expected_wav_file
+                )
+            ).strip().lower()
+            if user_input != "yes":
+                LOGGER.info("Skipping generation for %s due to user input.", county_name)
+                overwrite = False
+
+        if overwrite:
+            LOGGER.info("Generating county WAV for %s -> %s", county_name, expected_wav_file)
+            generate_wav(API_KEY, LANGUAGE, SPEED, VOICE, sanitized_county_name, output_file)
+
+        new_county_codes.append({county_code: expected_wav_file})
+
+    config["Alerting"]["CountyCodes"] = new_county_codes
 
 
 def display_initial_warning():
@@ -225,23 +257,22 @@ def display_initial_warning():
     ============================================================
     WARNING: Please read the following information carefully before proceeding.
 
-    This utility is designed to generate WAV audio files corresponding to each county code 
-    defined in the SkywarnPlus config.yaml using the Voice RSS Text-to-Speech API. The generated 
-    audio files will be saved in the appropriate location, and the SkywarnPlus config.yaml will 
+    This utility is designed to generate WAV audio files corresponding to each county code
+    defined in the SkywarnPlus config.yaml using the Voice RSS Text-to-Speech API. The generated
+    audio files will be saved in the appropriate location, and the SkywarnPlus config.yaml will
     be automatically updated to use them.
 
     However, a few things to keep in mind:
     - The script will only attempt to generate WAV files for county codes that are defined in the config.
-    
-    - Pronunciations for some county names might not be accurate. In such cases, you may need to 
-      manually create the files using VoiceRSS. This might involve intentionally misspelling the county 
+
+    - Pronunciations for some county names might not be accurate. In such cases, you may need to
+      manually create the files using VoiceRSS. This might involve intentionally misspelling the county
       name to achieve the desired pronunciation.
-    
-    - This script will attempt to backup any files before it modifies them, but it is always a good idea to
+
+    - This script will attempt to backup files before it modifies them, but it is always a good idea to
       manually back up your existing configuration and files before running this script.
 
     - This script will modify your config.yaml file, so you should ALWAYS double check the changes it makes.
-      There might be improperly formatted indentations, comments, etc. that you will need to fix manually.
 
     Proceed with caution.
     ============================================================
@@ -249,39 +280,35 @@ def display_initial_warning():
     print(warning_message)
 
 
-# Display the initial warning
-display_initial_warning()
+def main():
+    display_initial_warning()
 
-# Wait for user acknowledgment before proceeding.
-user_input = input("Do you want to proceed? [yes/no]: ").lower()
-if user_input != "yes":
-    LOGGER.info("Aborting process due to user input.")
-    sys.exit()
+    user_input = input("Do you want to proceed? [yes/no]: ").strip().lower()
+    if user_input != "yes":
+        LOGGER.info("Aborting process due to user input.")
+        sys.exit(0)
 
-# Load county names and generate WAV files
-backup_date = datetime.now().strftime("%Y%m%d")
-backup_name = os.path.join(SOUNDS_PATH, "CountyID_Backup_{}.zip".format(backup_date))
-backup_existing_files(SOUNDS_PATH, "", backup_name)
+    if not API_KEY or API_KEY == "YOUR_API_KEY_HERE":
+        LOGGER.error("SkyDescribe APIKey is not configured in config.yaml.")
+        sys.exit(1)
 
-# Load county codes and names
-county_data = load_county_codes_from_md(COUNTY_CODES_PATH)
+    if not os.path.isdir(SOUNDS_PATH):
+        LOGGER.info("Creating sounds directory: %s", SOUNDS_PATH)
+        os.makedirs(SOUNDS_PATH, exist_ok=True)
 
-# Call the function to process the county codes
-process_county_codes()
+    backup_date = datetime.now().strftime("%Y%m%d")
+    backup_name = os.path.join(SOUNDS_PATH, "CountyID_Backup_{}.zip".format(backup_date))
+    backup_existing_files(SOUNDS_PATH, backup_name)
 
-# Update config.yaml to reflect the WAV file mappings
-for i, county_code in enumerate(config["Alerting"]["CountyCodes"]):
-    if isinstance(county_code, str):
-        county_name = county_data.get(county_code)
-        if county_name:
-            sanitized_county_name = sanitize_text_for_tts(county_name)
-            config["Alerting"]["CountyCodes"][i] = {
-                county_code: "{}.wav".format(sanitized_county_name)
-            }
+    county_data = load_county_codes_from_md(COUNTY_CODES_PATH)
+    process_county_codes(county_data)
 
-# Write the updated config.yaml
-with open(CONFIG_PATH, "w") as config_file:
-    yaml.indent(sequence=4, offset=2)
-    yaml.dump(config, config_file)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as config_file:
+        yaml.indent(sequence=4, offset=2)
+        yaml.dump(config, config_file)
 
-LOGGER.info("County WAV files generation completed.")
+    LOGGER.info("County WAV files generation completed.")
+
+
+if __name__ == "__main__":
+    main()
