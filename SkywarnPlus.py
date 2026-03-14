@@ -3,20 +3,20 @@
 """
 SkywarnPlus.py v0.8.0 by Mason Nelson
 ===============================================================================
-SkywarnPlus is a utility that retrieves severe weather alerts from the National 
-Weather Service and integrates these alerts with an Asterisk/app_rpt based 
-radio repeater controller. 
+SkywarnPlus is a utility that retrieves severe weather alerts from the National
+Weather Service and integrates these alerts with an Asterisk/app_rpt based
+radio repeater controller.
 
-This utility is designed to be highly configurable, allowing users to specify 
-particular counties for which to check for alerts, the types of alerts to include 
-or block, and how these alerts are integrated into their radio repeater system. 
+This utility is designed to be highly configurable, allowing users to specify
+particular counties for which to check for alerts, the types of alerts to include
+or block, and how these alerts are integrated into their radio repeater system.
 
-This includes features such as automatic voice alerts and a tail message feature 
-for constant updates. All alerts are sorted by severity and cover a broad range 
-of weather conditions such as hurricane warnings, thunderstorms, heat waves, etc. 
+This includes features such as automatic voice alerts and a tail message feature
+for constant updates. All alerts are sorted by severity and cover a broad range
+of weather conditions such as hurricane warnings, thunderstorms, heat waves, etc.
 
-Configurable through a .yaml file, SkywarnPlus serves as a comprehensive and 
-flexible tool for those who need to stay informed about weather conditions 
+Configurable through a .yaml file, SkywarnPlus serves as a comprehensive and
+flexible tool for those who need to stay informed about weather conditions
 and disseminate this information through their radio repeater system.
 
 This file is part of SkywarnPlus.
@@ -1311,8 +1311,7 @@ def send_pushover(message, title=None, priority=0):
         return
 
     # Remove newline from the end of the message
-    message = message.rstrip("
-")
+    message = message.rstrip("\n")
 
     url = "https://api.pushover.net/1/messages.json"
     payload = {
@@ -1368,8 +1367,7 @@ def change_ct_id_helper(
                 LOGGER.debug("Alert %s requires a %s change", alert, alert_type)
                 changed = change_ct("WX") if alert_type == "CT" else change_id("WX")
                 if changed and pushover_debug:
-                    pushover_message += "Changed {} to WX
-".format(alert_type)
+                    pushover_message += "Changed {} to WX\n".format(alert_type)
                 break
         else:
             LOGGER.debug(
@@ -1377,8 +1375,7 @@ def change_ct_id_helper(
             )
             changed = change_ct("NORMAL") if alert_type == "CT" else change_id("NORMAL")
             if changed and pushover_debug:
-                pushover_message += "Changed {} to NORMAL
-".format(alert_type)
+                pushover_message += "Changed {} to NORMAL\n".format(alert_type)
     else:
         LOGGER.debug("%s auto change is not enabled", alert_type)
 

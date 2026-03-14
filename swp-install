@@ -238,7 +238,7 @@ install_dependencies() {
             python /tmp/get-pip.py
             rm -f /tmp/get-pip.py
         fi
-        pip install requests python-dateutil pydub ruamel.yaml==0.15.100
+        pip install requests python-dateutil pydub audioop-lts ruamel.yaml==0.15.100
     else
         print_divider
         echo "Unsupported OS version. Exiting."
@@ -276,7 +276,12 @@ setup_python_env() {
     if [ "$OS" = "debian" ]; then
         python3 -m venv "$VENV_DIR"
         "${VENV_DIR}/bin/pip" install --upgrade pip wheel setuptools
-        "${VENV_DIR}/bin/pip" install requests python-dateutil ruamel.yaml pydub
+        "${VENV_DIR}/bin/pip" install \
+            requests \
+            python-dateutil \
+            ruamel.yaml \
+            pydub \
+            audioop-lts
     fi
 }
 
