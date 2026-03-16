@@ -1,4 +1,4 @@
-#!/usr/local/bin/SkywarnPlus/venv/bin/python
+#!/usr/local/bin/SkywarnPlus/.venv/bin/python
 """
 CustomAlertScript.py
 
