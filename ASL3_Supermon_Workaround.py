@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/local/bin/SkywarnPlus/venv/bin/python
 
 """
 ASL3_Supermon_Workaround.py by Mason Nelson
