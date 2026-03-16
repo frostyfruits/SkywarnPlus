@@ -1,4 +1,4 @@
-#!/usr/local/bin/SkywarnPlus/venv/bin/python
+#!/usr/local/bin/SkywarnPlus/.venv/bin/python
 
 """
 SkyDescribe.py v0.8.0 by Mason Nelson
