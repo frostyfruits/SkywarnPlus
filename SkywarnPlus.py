@@ -1,5 +1,4 @@
-#!/usr/bin/python3
-
+#!/usr/local/bin/SkywarnPlus/venv/bin/python
 """
 SkywarnPlus.py v0.8.0 by Mason Nelson
 ===============================================================================
