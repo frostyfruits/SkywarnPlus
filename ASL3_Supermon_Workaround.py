@@ -93,7 +93,7 @@ def load_county_names(md_file):
             continue
 
         if stripped.startswith("##"):
-            break
+            continue
 
         if not stripped.startswith("|"):
             continue
@@ -105,7 +105,7 @@ def load_county_names(md_file):
         name = parts[0]
         code = parts[1]
 
-        if name and code and code.lower() != "code":
+        if name and code and name.lower() != "county" and code.lower() != "code":
             county_data[code] = name
 
     return county_data
