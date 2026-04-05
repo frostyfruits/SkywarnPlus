@@ -1,21 +1,22 @@
-#!/usr/local/bin/SkywarnPlus/.venv/bin/python
+#!/usr/bin/python3
+
 """
 SkywarnPlus.py v0.8.0 by Mason Nelson
 ===============================================================================
-SkywarnPlus is a utility that retrieves severe weather alerts from the National
-Weather Service and integrates these alerts with an Asterisk/app_rpt based
-radio repeater controller.
+SkywarnPlus is a utility that retrieves severe weather alerts from the National 
+Weather Service and integrates these alerts with an Asterisk/app_rpt based 
+radio repeater controller. 
 
-This utility is designed to be highly configurable, allowing users to specify
-particular counties for which to check for alerts, the types of alerts to include
-or block, and how these alerts are integrated into their radio repeater system.
+This utility is designed to be highly configurable, allowing users to specify 
+particular counties for which to check for alerts, the types of alerts to include 
+or block, and how these alerts are integrated into their radio repeater system. 
 
-This includes features such as automatic voice alerts and a tail message feature
-for constant updates. All alerts are sorted by severity and cover a broad range
-of weather conditions such as hurricane warnings, thunderstorms, heat waves, etc.
+This includes features such as automatic voice alerts and a tail message feature 
+for constant updates. All alerts are sorted by severity and cover a broad range 
+of weather conditions such as hurricane warnings, thunderstorms, heat waves, etc. 
 
-Configurable through a .yaml file, SkywarnPlus serves as a comprehensive and
-flexible tool for those who need to stay informed about weather conditions
+Configurable through a .yaml file, SkywarnPlus serves as a comprehensive and 
+flexible tool for those who need to stay informed about weather conditions 
 and disseminate this information through their radio repeater system.
 
 This file is part of SkywarnPlus.
@@ -40,6 +41,8 @@ import contextlib
 import math
 import sys
 import itertools
+import tempfile
+import fcntl
 from datetime import datetime, timezone, timedelta
 from dateutil import parser
 from pydub import AudioSegment
@@ -106,9 +109,11 @@ ENABLE_IDCHANGE = IDCHANGE_CONFIG.get("Enable", False)
 
 # Data file path
 DATA_FILE = os.path.join(TMP_DIR, "data.json")
+STATE_LOCK_FILE = DATA_FILE + ".lock"
+STATE_BAK_FILE = DATA_FILE + ".bak"
 
 # Tones directory
-TONE_DIR = config.get("CourtesyTones", {}).get("ToneDir", os.path.join(SOUNDS_PATH, "TONES"))
+TONE_DIR = config["CourtesyTones"].get("ToneDir", os.path.join(SOUNDS_PATH, "TONES"))
 
 # Define possible alert strings
 ALERT_STRINGS = [
@@ -248,8 +253,8 @@ ALERT_INDEXES = [str(i + 1) for i in range(len(ALERT_STRINGS))]
 # Test if the script needs to start from a clean slate
 CLEANSLATE = config.get("DEV", {}).get("CLEANSLATE", False)
 if CLEANSLATE:
-    shutil.rmtree(TMP_DIR, ignore_errors=True)
-    os.makedirs(TMP_DIR, exist_ok=True)
+    shutil.rmtree(TMP_DIR)
+    os.mkdir(TMP_DIR)
 
 # Logging setup
 LOG_CONFIG = config.get("Logging", {})
@@ -259,7 +264,6 @@ LOG_FILE = LOG_CONFIG.get("LogPath", os.path.join(TMP_DIR, "SkywarnPlus.log"))
 # Set up logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.DEBUG if ENABLE_DEBUG else logging.INFO)
-LOGGER.handlers.clear()
 
 # Set up log message formatting
 LOG_FORMATTER = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
@@ -314,15 +318,11 @@ LOGGER.debug("SayAlert Blocked events: %s", SAYALERT_BLOCKED_EVENTS)
 LOGGER.debug("Tailmessage Blocked events: %s", TAILMESSAGE_BLOCKED_EVENTS)
 
 
-def load_state():
+def default_state():
     """
-    Load the state from the state file if it exists, else return an initial state.
-
-    The state file is expected to be a JSON file. If certain keys are missing in the
-    loaded state, this function will provide default values for those keys.
+    Return the default SkywarnPlus runtime state.
     """
-
-    default_state = {
+    return {
         "ct": None,
         "id": None,
         "alertscript_alerts": [],
@@ -331,57 +331,166 @@ def load_state():
         "active_alerts": [],
     }
 
+
+def load_state():
+    """
+    Load the state from the state file if it exists, else return an initial state.
+
+    Uses a shared lock while reading and attempts recovery from a corrupt state file
+    by restoring from a backup or falling back to defaults.
+    """
+
     if not os.path.exists(DATA_FILE):
-        return default_state
+        return default_state()
 
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as file:
-            state = json.load(file)
-    except (OSError, json.JSONDecodeError) as e:
+        with open(STATE_LOCK_FILE, "w", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_SH)
+
+            with open(DATA_FILE, "r", encoding="utf-8") as file:
+                state = json.load(file)
+
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+        state["alertscript_alerts"] = state.get("alertscript_alerts", [])
+
+        last_alerts = state.get("last_alerts", [])
+        state["last_alerts"] = OrderedDict((x[0], x[1]) for x in last_alerts)
+
+        last_sayalert = state.get("last_sayalert", [])
+        if isinstance(last_sayalert, dict):
+            state["last_sayalert"] = last_sayalert
+        else:
+            state["last_sayalert"] = list(last_sayalert)
+
+        state["active_alerts"] = state.get("active_alerts", [])
+
+        return state
+
+    except (json.JSONDecodeError, OSError, ValueError, TypeError) as e:
         LOGGER.error("load_state: Failed to load %s: %s", DATA_FILE, e)
-        return default_state
 
-    state["alertscript_alerts"] = state.get("alertscript_alerts", [])
-    state["last_sayalert"] = state.get("last_sayalert", [])
-    state["active_alerts"] = state.get("active_alerts", [])
-
-    last_alerts = state.get("last_alerts", [])
-    if isinstance(last_alerts, list):
+        bad_file = DATA_FILE + ".bad"
         try:
-            state["last_alerts"] = OrderedDict((x[0], x[1]) for x in last_alerts)
-        except (TypeError, IndexError):
-            state["last_alerts"] = OrderedDict()
-    elif isinstance(last_alerts, dict):
-        state["last_alerts"] = OrderedDict(last_alerts)
-    else:
-        state["last_alerts"] = OrderedDict()
+            if os.path.exists(DATA_FILE):
+                shutil.copy2(DATA_FILE, bad_file)
+                LOGGER.error("load_state: Backed up corrupt state file to %s", bad_file)
+        except Exception as backup_err:
+            LOGGER.error(
+                "load_state: Failed to back up corrupt state file: %s", backup_err
+            )
 
-    return state
+        if os.path.exists(STATE_BAK_FILE):
+            try:
+                with open(STATE_BAK_FILE, "r", encoding="utf-8") as file:
+                    state = json.load(file)
+
+                state["alertscript_alerts"] = state.get("alertscript_alerts", [])
+                last_alerts = state.get("last_alerts", [])
+                state["last_alerts"] = OrderedDict((x[0], x[1]) for x in last_alerts)
+
+                last_sayalert = state.get("last_sayalert", [])
+                if isinstance(last_sayalert, dict):
+                    state["last_sayalert"] = last_sayalert
+                else:
+                    state["last_sayalert"] = list(last_sayalert)
+
+                state["active_alerts"] = state.get("active_alerts", [])
+
+                LOGGER.warning(
+                    "load_state: Recovered state from backup %s", STATE_BAK_FILE
+                )
+                return state
+            except Exception as restore_err:
+                LOGGER.error(
+                    "load_state: Failed to restore from backup %s: %s",
+                    STATE_BAK_FILE,
+                    restore_err,
+                )
+
+        LOGGER.warning("load_state: Falling back to default state")
+        return default_state()
 
 
 def save_state(state):
     """
-    Save the state to the state file.
+    Save the state to the state file atomically.
 
-    The state is saved as a JSON file. The function ensures certain keys in the state
-    are converted to lists before saving, ensuring consistency and ease of processing
-    when the state is later loaded.
+    Uses an exclusive lock, writes to a temporary file in the same directory,
+    fsyncs it, keeps a backup of the previous good file, and atomically replaces
+    the live state file.
     """
 
-    # Convert 'alertscript_alerts', 'last_sayalert', and 'active_alerts' keys to lists
-    # This ensures consistency in data format, especially useful when loading the state later
-    state["alertscript_alerts"] = list(state["alertscript_alerts"])
-    state["last_sayalert"] = list(state["last_sayalert"])
-    state["active_alerts"] = list(state["active_alerts"])
+    last_alerts = state.get("last_alerts", OrderedDict())
+    if isinstance(last_alerts, OrderedDict):
+        last_alerts_to_save = list(last_alerts.items())
+    elif isinstance(last_alerts, dict):
+        last_alerts_to_save = list(last_alerts.items())
+    else:
+        last_alerts_to_save = list(last_alerts)
 
-    # Convert 'last_alerts' from OrderedDict to list of items
-    # This step is necessary because JSON does not natively support OrderedDict
-    state["last_alerts"] = list(state["last_alerts"].items())
+    last_sayalert = state.get("last_sayalert", [])
+    if isinstance(last_sayalert, dict):
+        last_sayalert_to_save = last_sayalert
+    else:
+        last_sayalert_to_save = list(last_sayalert)
 
-    # Save the state to the data file in a formatted manner
-    with open(DATA_FILE, "w", encoding="utf-8") as file:
-        json.dump(state, file, ensure_ascii=False, indent=4)
+    state_to_save = {
+        "ct": state.get("ct"),
+        "id": state.get("id"),
+        "alertscript_alerts": list(state.get("alertscript_alerts", [])),
+        "last_alerts": last_alerts_to_save,
+        "last_sayalert": last_sayalert_to_save,
+        "active_alerts": list(state.get("active_alerts", [])),
+    }
 
+    state_dir = os.path.dirname(DATA_FILE) or "."
+    temp_fd = None
+    temp_path = None
+
+    with open(STATE_LOCK_FILE, "w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+        try:
+            payload = json.dumps(state_to_save, ensure_ascii=False, indent=4)
+            json.loads(payload)
+
+            temp_fd, temp_path = tempfile.mkstemp(
+                prefix=".skywarnplus.",
+                suffix=".tmp",
+                dir=state_dir,
+            )
+
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as file:
+                temp_fd = None
+                file.write(payload)
+                file.flush()
+                os.fsync(file.fileno())
+
+            if os.path.exists(DATA_FILE):
+                shutil.copy2(DATA_FILE, STATE_BAK_FILE)
+
+            os.replace(temp_path, DATA_FILE)
+            temp_path = None
+
+        except Exception as e:
+            LOGGER.error("save_state: Failed saving state to %s: %s", DATA_FILE, e)
+            raise
+
+        finally:
+            if temp_fd is not None:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 def get_alerts(countyCodes):
     """
@@ -499,7 +608,7 @@ def get_alerts(countyCodes):
         # url = "https://api.weather.gov/alerts/active"
         try:
             # If we can get a successful response from the API, we process the alerts from the response.
-            response = requests.get(url, timeout=20)
+            response = requests.get(url)
             response.raise_for_status()
             LOGGER.debug(
                 "getAlerts: Checking for alerts in %s at URL: %s", countyCode, url
@@ -884,11 +993,10 @@ def say_alerts(alerts):
     node_numbers = config.get("Asterisk", {}).get("Nodes", [])
     for node_number in node_numbers:
         LOGGER.info("Broadcasting alert on node %s", node_number)
-        audio_stem = os.path.splitext(os.path.abspath(alert_file))[0]
-        subprocess.run(
-            ["/usr/sbin/asterisk", "-rx", "rpt localplay {} {}".format(node_number, audio_stem)],
-            check=False,
+        command = '/usr/sbin/asterisk -rx "rpt localplay {} {}"'.format(
+            node_number, os.path.splitext(os.path.abspath(alert_file))[0]
         )
+        subprocess.run(command, shell=True)
 
     # Get the duration of the alert_file
     with contextlib.closing(wave.open(alert_file, "r")) as f:
@@ -917,7 +1025,7 @@ def say_allclear():
 
     # Define file paths for the sounds
     all_clear_sound_file = os.path.join(
-        config.get("Alerting", {}).get("SoundsPath", SOUNDS_PATH),
+        config.get("Alerting", {}).get("SoundsPath"),
         "ALERTS",
         "EFFECTS",
         config.get("Alerting", {}).get("AllClearSound"),
@@ -965,11 +1073,10 @@ def say_allclear():
     node_numbers = config.get("Asterisk", {}).get("Nodes", [])
     for node_number in node_numbers:
         LOGGER.info("Broadcasting all clear message on node %s", node_number)
-        audio_stem = os.path.splitext(os.path.abspath(all_clear_file))[0]
-        subprocess.run(
-            ["/usr/sbin/asterisk", "-rx", "rpt localplay {} {}".format(node_number, audio_stem)],
-            check=False,
+        command = '/usr/sbin/asterisk -rx "rpt localplay {} {}"'.format(
+            node_number, os.path.splitext(os.path.abspath(all_clear_file))[0]
         )
+        subprocess.run(command, shell=True)
 
 
 def build_tailmessage(alerts):
@@ -1181,13 +1288,13 @@ def alert_script(alerts):
                 if command["Type"].upper() == "BASH":
                     for cmd in command["Commands"]:
                         LOGGER.info("Executing Active BASH Command: %s", cmd)
-                        subprocess.run(cmd, shell=True, check=False)
+                        subprocess.run(cmd, shell=True)
                 elif command["Type"].upper() == "DTMF":
                     for node in command["Nodes"]:
                         for cmd in command["Commands"]:
-                            dtmf_cmd = "rpt fun {} {}".format(node, cmd)
+                            dtmf_cmd = 'asterisk -rx "rpt fun {} {}"'.format(node, cmd)
                             LOGGER.info("Executing Active DTMF Command: %s", dtmf_cmd)
-                            subprocess.run(["/usr/sbin/asterisk", "-rx", dtmf_cmd], check=False)
+                            subprocess.run(dtmf_cmd, shell=True)
 
     # Check for transition from non-zero to zero active alerts and execute InactiveCommands
     if previous_active_count > 0 and current_active_count == 0:
@@ -1197,13 +1304,13 @@ def alert_script(alerts):
                 if command["Type"].upper() == "BASH":
                     for cmd in command["Commands"]:
                         LOGGER.info("Executing Inactive BASH Command: %s", cmd)
-                        subprocess.run(cmd, shell=True, check=False)
+                        subprocess.run(cmd, shell=True)
                 elif command["Type"].upper() == "DTMF":
                     for node in command["Nodes"]:
                         for cmd in command["Commands"]:
-                            dtmf_cmd = "rpt fun {} {}".format(node, cmd)
+                            dtmf_cmd = 'asterisk -rx "rpt fun {} {}"'.format(node, cmd)
                             LOGGER.info("Executing Inactive DTMF Command: %s", dtmf_cmd)
-                            subprocess.run(["/usr/sbin/asterisk", "-rx", dtmf_cmd], check=False)
+                            subprocess.run(dtmf_cmd, shell=True)
 
     # Fetch Mappings from AlertScript configuration
     mappings = alertScript_config.get("Mappings", [])
@@ -1245,15 +1352,15 @@ def alert_script(alerts):
                             alert_title=alert
                         )  # Replace placeholder with alert title
                         LOGGER.info("AlertScript: Executing BASH command: %s", cmd)
-                        subprocess.run(cmd, shell=True, check=False)
+                        subprocess.run(cmd, shell=True)
                 elif mapping.get("Type") == "DTMF":
                     for node in nodes:
                         for cmd in commands:
-                            dtmf_cmd = "rpt fun {} {}".format(node, cmd)
+                            dtmf_cmd = 'asterisk -rx "rpt fun {} {}"'.format(node, cmd)
                             LOGGER.info(
                                 "AlertScript: Executing DTMF command: %s", dtmf_cmd
                             )
-                            subprocess.run(["/usr/sbin/asterisk", "-rx", dtmf_cmd], check=False)
+                            subprocess.run(dtmf_cmd, shell=True)
 
     # Process each mapping for cleared alerts
     for mapping in mappings:
@@ -1277,14 +1384,14 @@ def alert_script(alerts):
                 LOGGER.debug("Executing clear command: %s", cmd)
                 if mapping.get("Type") == "BASH":
                     LOGGER.info("AlertScript: Executing BASH ClearCommand: %s", cmd)
-                    subprocess.run(cmd, shell=True, check=False)
+                    subprocess.run(cmd, shell=True)
                 elif mapping.get("Type") == "DTMF":
                     for node in mapping.get("Nodes", []):
-                        dtmf_cmd = "rpt fun {} {}".format(node, cmd)
+                        dtmf_cmd = 'asterisk -rx "rpt fun {} {}"'.format(node, cmd)
                         LOGGER.info(
                             "AlertScript: Executing DTMF ClearCommand: %s", dtmf_cmd
                         )
-                        subprocess.run(["/usr/sbin/asterisk", "-rx", dtmf_cmd], check=False)
+                        subprocess.run(dtmf_cmd, shell=True)
 
     # Update the state with the alerts processed in this run
     state["alertscript_alerts"] = list(
@@ -1301,13 +1408,9 @@ def send_pushover(message, title=None, priority=0):
     This function constructs the payload for the request, including the user key, API token, message, title, and priority.
     The payload is then sent to the Pushover API endpoint. If the request fails, an error message is logged.
     """
-    pushover_config = config.get("Pushover", {})
+    pushover_config = config["Pushover"]
     user_key = pushover_config.get("UserKey")
     token = pushover_config.get("APIToken")
-
-    if not user_key or not token:
-        LOGGER.error("Failed to send Pushover notification: missing UserKey or APIToken")
-        return
 
     # Remove newline from the end of the message
     message = message.rstrip("\n")
@@ -1321,11 +1424,7 @@ def send_pushover(message, title=None, priority=0):
         "priority": priority,
     }
 
-    try:
-        response = requests.post(url, data=payload, timeout=20)
-    except requests.exceptions.RequestException as e:
-        LOGGER.error("Failed to send Pushover notification: %s", e)
-        return
+    response = requests.post(url, data=payload)
 
     if response.status_code != 200:
         LOGGER.error("Failed to send Pushover notification: %s", response.text)
@@ -1347,8 +1446,7 @@ def change_ct_id_helper(
     pushover_message,
 ):
     """
-    Check whether the CT or ID needs to be changed, perform the change, and return
-    the updated pushover message.
+    Check whether the CT or ID needs to be changed, performs the change, and logs the process.
     """
     if auto_change_enabled:
         LOGGER.debug(
@@ -1358,27 +1456,35 @@ def change_ct_id_helper(
             specified_alerts,
         )
 
+        # Extract only the alert names from the OrderedDict keys
         alert_names = [alert for alert in alerts.keys()]
-        intersecting_alerts = [alert for alert in alert_names if alert in specified_alerts]
+
+        # Check if any alert matches specified_alerts
+        # Here we replace set intersection with a list comprehension
+        intersecting_alerts = [
+            alert for alert in alert_names if alert in specified_alerts
+        ]
 
         if intersecting_alerts:
             for alert in intersecting_alerts:
                 LOGGER.debug("Alert %s requires a %s change", alert, alert_type)
-                changed = change_ct("WX") if alert_type == "CT" else change_id("WX")
-                if changed and pushover_debug:
-                    pushover_message += "Changed {} to WX\n".format(alert_type)
+                if (
+                    change_ct("WX") if alert_type == "CT" else change_id("WX")
+                ):  # If the CT/ID was actually changed
+                    if pushover_debug:
+                        pushover_message += "Changed {} to WX\n".format(alert_type)
                 break
-        else:
+        else:  # No alerts require a CT/ID change, revert back to normal
             LOGGER.debug(
                 "No alerts require a %s change, reverting to normal.", alert_type
             )
-            changed = change_ct("NORMAL") if alert_type == "CT" else change_id("NORMAL")
-            if changed and pushover_debug:
-                pushover_message += "Changed {} to NORMAL\n".format(alert_type)
+            if (
+                change_ct("NORMAL") if alert_type == "CT" else change_id("NORMAL")
+            ):  # If the CT/ID was actually changed
+                if pushover_debug:
+                    pushover_message += "Changed {} to NORMAL\n".format(alert_type)
     else:
         LOGGER.debug("%s auto change is not enabled", alert_type)
-
-    return pushover_message
 
 
 def change_ct(mode):
@@ -1770,14 +1876,14 @@ def ast_var_update():
         alert_content = ""
 
     if not MASTER_ENABLE:
-        alert = "<span style='color: darkorange;'><b><u><a href='https://github.com/frostyfruits/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Disabled</a></u></b></span>"
+        alert = "<span style='color: darkorange;'><b><u><a href='https://github.com/mason10198/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Disabled</a></u></b></span>"
     elif not alert_content:
-        alert = "<span style='color: green;'><b><u><a href='https://github.com/frostyfruits/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Enabled</a></u><br>No Alerts</b></span>"
+        alert = "<span style='color: green;'><b><u><a href='https://github.com/mason10198/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Enabled</a></u><br>No Alerts</b></span>"
     else:
         # Adjusted to remove both '[' and ']' correctly
         alert_content_cleaned = alert_content.replace("[", "").replace("]", "")
-        alert = "<span style='color: green;'><b><u><a href='https://github.com/frostyfruits/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Enabled</a></u><br><span style='color: red;'>{}</span></b></span>".format(
-            alert_content_cleaned
+        alert = "<span style='color: green;'><b><u><a href='https://github.com/mason10198/SkywarnPlus' style='color: inherit; text-decoration: none;'>SkywarnPlus Enabled</a></u><br><span style='color: red;'>{}</span></b></span>".format(
+            alert_content
         )
 
     LOGGER.debug("ast_var_update: Alert display: %s", alert)
@@ -2054,7 +2160,7 @@ def main():
             #     supermon_back_compat(alerts)
 
             # Change CT/ID if necessary and enabled
-            pushover_message = change_ct_id_helper(
+            change_ct_id_helper(
                 alerts,
                 ct_alerts,
                 enable_ct_auto_change,
@@ -2062,7 +2168,7 @@ def main():
                 pushover_debug,
                 pushover_message,
             )
-            pushover_message = change_ct_id_helper(
+            change_ct_id_helper(
                 alerts,
                 id_alerts,
                 enable_id_auto_change,
@@ -2157,4 +2263,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+   main()
