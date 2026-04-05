@@ -2233,34 +2233,27 @@ def main():
 
     # If no changes detected in alerts
     else:
-        # If this is being run interactively, inform the user that nothing has changed
-        if sys.stdin.isatty():
-            # Log list of current alerts, unless there aren't any, then current_alerts = "None"
-            if len(alerts) == 0:
-                current_alerts = "None"
-            else:
-                alert_details = []
-                for alert, counties in alerts.items():
-                    counties_str = ", ".join(
-                        sorted(
-                            set(
-                                replace_with_county_name(
-                                    county["county_code"], county_data
-                                )
-                                for county in counties
+        if len(alerts) == 0:
+            current_alerts = "None"
+        else:
+            alert_details = []
+            for alert, counties in alerts.items():
+                counties_str = ", ".join(
+                    sorted(
+                        set(
+                            replace_with_county_name(
+                                county["county_code"], county_data
                             )
+                            for county in counties
                         )
                     )
-                    alert_details.append("{} ({})".format(alert, counties_str))
-                current_alerts = "; ".join(alert_details)
+                )
+                alert_details.append("{} ({})".format(alert, counties_str))
+            current_alerts = "; ".join(alert_details)
 
-            LOGGER.info("No change in alerts.")
-            LOGGER.info("Current alerts: %s.", current_alerts)
-
-        # If this is being run non-interactively, only log if debug is enabled
-        else:
-            LOGGER.info("No change in alerts.")
+        LOGGER.info("No change in alerts.")
+        LOGGER.info("Current alerts: %s.", current_alerts)
 
 
 if __name__ == "__main__":
-   main()
+    main()
