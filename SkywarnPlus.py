@@ -2259,7 +2259,7 @@ def main():
 
         # If this is being run non-interactively, only log if debug is enabled
         else:
-            LOGGER.debug("No change in alerts.")
+            LOGGER.info("No change in alerts.")
 
 
 if __name__ == "__main__":
