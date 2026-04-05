@@ -308,7 +308,7 @@ AlertScript:
   # AlertScript allows you to map BASH or DTMF commands to be executed when a weather alert is detected.
 
   # Completely enable/disable AlertScript
-  Enable: false
+  Enable: true
 
   # These are BASH or DTMF commands that are executed ONLY when the number of active alerts changes from ZERO to NON-ZERO.
   # Use the same format as other AlertScript mappings (see below).
@@ -396,8 +396,14 @@ AlertScript:
     - Type: BASH
       Commands:
         - '/usr/local/bin/SkywarnPlus/SkyDescribe.py "{alert_title}"'
-      Triggers:
-        - Tornado Warning
+    Triggers:
+    - '*Warning'
+    - '*Watch'
+    - '*Advisory'
+    - Civil Emergency Message
+    - Evacuation - Immediate
+    - Local Area Emergency
+
 
 ################################################################################################################################
 
